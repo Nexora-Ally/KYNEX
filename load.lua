@@ -21,7 +21,7 @@ local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
 -- Global variables
 local goalHologram = nil
 
--- Enhanced configuration with advanced maneuvers
+-- Enhanced configuration with advanced parkour tricks
 local CONFIG = {
     FOLLOW_DISTANCE = 5,
     RECALCULATION_INTERVAL = 0.5,
@@ -43,20 +43,6 @@ local CONFIG = {
         Color3.fromRGB(150, 0, 255),
     },
     
-    -- Advanced maneuver settings
-    LADDER_FLICK_JUMP_FORCE = 75,
-    WALLHOP_JUMP_FORCE = 50,
-    WRAP_AROUND_JUMP_FORCE = 60,
-    WALL_DETECTION_DISTANCE = 8,
-    LADDER_DETECTION_DISTANCE = 6,
-    PILLAR_DETECTION_ANGLE = 45,
-    
-    MANEUVER_COOLDOWNS = {
-        ladder_flick = 2,
-        wallhop = 1.5,
-        wrap_around = 2,
-    },
-    
     MEMORY_RETENTION_TIME = 300,
     MAX_FAILED_ATTEMPTS = 3,
     OBSTACLE_SCAN_DISTANCE = 15,
@@ -71,6 +57,15 @@ local CONFIG = {
     
     MAX_DELTA_TIME = 0.1,
     SMOOTH_FACTOR = 0.2,
+    
+    -- Advanced Parkour Settings
+    LADDER_FLICK_JUMP_POWER = 1.8,
+    WALLHOP_JUMP_POWER = 1.5,
+    WRAP_AROUND_JUMP_POWER = 1.6,
+    TRICK_COOLDOWN = 1.0,
+    WALL_DETECTION_DISTANCE = 8,
+    LADDER_DETECTION_DISTANCE = 12,
+    TRICK_AGGRESSION = 0.7, -- 0 to 1, higher = more likely to use tricks
 }
 
 -- Device detection
@@ -96,7 +91,7 @@ local performanceMonitor = {
     lastMemoryCheck = tick(),
 }
 
--- Enhanced AI State with maneuver tracking
+-- Enhanced AI State with advanced parkour
 local aiState = {
     isRunning = false,
     currentCommand = "Idle",
@@ -104,22 +99,12 @@ local aiState = {
     goalPosition = nil,
     currentPath = {},
     pathPreviewModels = {},
+    trickPreviewModels = {},
     lastWaypointIndex = 0,
     stuckTimer = 0,
     lastPosition = humanoidRootPart.Position,
     pathCache = {},
     lastPathCalculation = 0,
-    
-    -- Advanced maneuver state
-    currentManeuver = "None",
-    maneuverData = {},
-    maneuverCooldowns = {},
-    maneuverPreview = nil,
-    
-    -- Environment detection
-    nearbyLadders = {},
-    nearbyWalls = {},
-    nearbyPillars = {},
     
     pathMemory = {
         successfulPaths = {},
@@ -128,10 +113,33 @@ local aiState = {
         compressedPaths = {},
     },
     
+    currentManeuver = "None",
+    maneuverData = {},
+    maneuverCooldowns = {},
+    
     predictedPositions = {},
     
     state = "idle",
     stateHistory = {},
+    
+    -- Advanced Parkour State
+    lastTrickTime = 0,
+    isPerformingTrick = false,
+    currentTrick = "None",
+    trickProgress = 0,
+    wallDetectionData = {
+        leftWall = nil,
+        rightWall = nil,
+        frontWall = nil,
+        ladderNearby = nil
+    },
+    
+    -- Trick statistics
+    trickUsage = {
+        ladderFlick = 0,
+        wallHop = 0,
+        wrapAround = 0
+    }
 }
 
 -- Fixed ErrorHandler to avoid nil indexing
@@ -152,7 +160,7 @@ local ErrorHandler = {
     attemptRecovery = function()
         ErrorHandler.log("INFO", "Attempting error recovery")
         
-        if aiState.isRunning then
+        if aiState and aiState.isRunning then
             aiState.isRunning = false
             task.wait(0.5)
             aiState.isRunning = true
@@ -176,6 +184,301 @@ local DeltaTimeManager = {
     end,
 }
 
+-- Advanced Parkour Trick System
+local TrickSystem = {
+    canPerformTrick = function(): boolean
+        return aiState and tick() - (aiState.lastTrickTime or 0) > CONFIG.TRICK_COOLDOWN and not aiState.isPerformingTrick
+    end,
+    
+    detectWalls = function()
+        if not humanoidRootPart then return end
+        
+        local origin = humanoidRootPart.Position
+        local lookVector = humanoidRootPart.CFrame.LookVector
+        local rightVector = humanoidRootPart.CFrame.RightVector
+        
+        local raycastParams = RaycastParams.new()
+        raycastParams.FilterDescendantsInstances = {character}
+        raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+        
+        -- Front wall detection
+        local frontResult = Workspace:Raycast(origin, lookVector * CONFIG.WALL_DETECTION_DISTANCE, raycastParams)
+        aiState.wallDetectionData.frontWall = frontResult
+        
+        -- Left wall detection
+        local leftResult = Workspace:Raycast(origin, -rightVector * CONFIG.WALL_DETECTION_DISTANCE, raycastParams)
+        aiState.wallDetectionData.leftWall = leftResult
+        
+        -- Right wall detection
+        local rightResult = Workspace:Raycast(origin, rightVector * CONFIG.WALL_DETECTION_DISTANCE, raycastParams)
+        aiState.wallDetectionData.rightWall = rightResult
+        
+        -- Ladder/Truss detection
+        local ladderParts = {}
+        for _, part in ipairs(Workspace:GetPartsInRegion3(
+            Region3.new(
+                origin - Vector3.new(CONFIG.LADDER_DETECTION_DISTANCE, CONFIG.LADDER_DETECTION_DISTANCE, CONFIG.LADDER_DETECTION_DISTANCE),
+                origin + Vector3.new(CONFIG.LADDER_DETECTION_DISTANCE, CONFIG.LADDER_DETECTION_DISTANCE, CONFIG.LADDER_DETECTION_DISTANCE)
+            )
+        )) do
+            if part.Name:lower():find("ladder") or part.Name:lower():find("truss") or part:IsA("TrussPart") then
+                table.insert(ladderParts, part)
+            end
+        end
+        aiState.wallDetectionData.ladderNearby = #ladderParts > 0
+    end,
+    
+    -- Ladder Flick: Quick jump from ladder/truss with momentum
+    executeLadderFlick = function(direction: Vector3)
+        if not TrickSystem.canPerformTrick() or not humanoid then return false end
+        
+        aiState.isPerformingTrick = true
+        aiState.currentTrick = "LadderFlick"
+        aiState.lastTrickTime = tick()
+        aiState.trickUsage.ladderFlick = aiState.trickUsage.ladderFlick + 1
+        
+        updateStatus("Trick", "Executing Ladder Flick!")
+        
+        -- Enhanced jump from ladder
+        humanoid.Jump = true
+        local originalJumpPower = humanoid.JumpPower
+        humanoid.JumpPower = originalJumpPower * CONFIG.LADDER_FLICK_JUMP_POWER
+        
+        -- Add forward momentum
+        local flickDirection = (direction + Vector3.new(0, 0.3, 0)).Unit
+        humanoid:Move(flickDirection * 2.0)
+        
+        -- Create visual effect
+        TrickSystem.createTrickPreview("LadderFlick", humanoidRootPart.Position, flickDirection)
+        
+        task.wait(0.3)
+        
+        -- Reset jump power
+        humanoid.JumpPower = originalJumpPower
+        aiState.isPerformingTrick = false
+        aiState.currentTrick = "None"
+        
+        return true
+    end,
+    
+    -- Wall Hop: Rapid hopping between two walls/surfaces
+    executeWallHop = function()
+        if not TrickSystem.canPerformTrick() or not humanoid then return false end
+        
+        aiState.isPerformingTrick = true
+        aiState.currentTrick = "WallHop"
+        aiState.lastTrickTime = tick()
+        aiState.trickUsage.wallHop = aiState.trickUsage.wallHop + 1
+        
+        updateStatus("Trick", "Executing Wall Hop!")
+        
+        local origin = humanoidRootPart.Position
+        local rightVector = humanoidRootPart.CFrame.RightVector
+        
+        -- Determine which walls are available
+        local hasLeftWall = aiState.wallDetectionData.leftWall ~= nil
+        local hasRightWall = aiState.wallDetectionData.rightWall ~= nil
+        
+        if hasLeftWall and hasRightWall then
+            local originalJumpPower = humanoid.JumpPower
+            humanoid.JumpPower = originalJumpPower * CONFIG.WALLHOP_JUMP_POWER
+            
+            -- Alternate between walls for rapid hopping
+            for i = 1, 3 do
+                if i % 2 == 1 then
+                    -- Hop to right
+                    humanoid.Jump = true
+                    humanoid:Move(rightVector * 1.5)
+                    TrickSystem.createTrickPreview("WallHop", origin, rightVector)
+                else
+                    -- Hop to left
+                    humanoid.Jump = true
+                    humanoid:Move(-rightVector * 1.5)
+                    TrickSystem.createTrickPreview("WallHop", origin, -rightVector)
+                end
+                task.wait(0.2)
+            end
+            
+            -- Reset jump power
+            humanoid.JumpPower = originalJumpPower
+        end
+        
+        aiState.isPerformingTrick = false
+        aiState.currentTrick = "None"
+        return true
+    end,
+    
+    -- Wrap Around: Circular jump around wall/pillar
+    executeWrapAround = function(direction: Vector3)
+        if not TrickSystem.canPerformTrick() or not humanoid then return false end
+        
+        aiState.isPerformingTrick = true
+        aiState.currentTrick = "WrapAround"
+        aiState.lastTrickTime = tick()
+        aiState.trickUsage.wrapAround = aiState.trickUsage.wrapAround + 1
+        
+        updateStatus("Trick", "Executing Wrap Around!")
+        
+        local origin = humanoidRootPart.Position
+        local rightVector = humanoidRootPart.CFrame.RightVector
+        
+        -- Determine wrap direction based on available space
+        local leftSpace = TrickSystem.checkClearance(-rightVector)
+        local rightSpace = TrickSystem.checkClearance(rightVector)
+        
+        local wrapDirection = rightSpace > leftSpace and rightVector or -rightVector
+        
+        -- Execute circular motion
+        humanoid.Jump = true
+        local originalJumpPower = humanoid.JumpPower
+        humanoid.JumpPower = originalJumpPower * CONFIG.WRAP_AROUND_JUMP_POWER
+        
+        -- Combine forward and sideways motion for circular path
+        local wrapVector = (direction * 0.7 + wrapDirection * 0.8).Unit
+        humanoid:Move(wrapVector * 1.8)
+        
+        -- Create visual effect showing circular path
+        TrickSystem.createTrickPreview("WrapAround", origin, wrapVector)
+        
+        task.wait(0.4)
+        
+        -- Reset jump power
+        humanoid.JumpPower = originalJumpPower
+        aiState.isPerformingTrick = false
+        aiState.currentTrick = "None"
+        
+        return true
+    end,
+    
+    checkClearance = function(direction: Vector3): number
+        if not humanoidRootPart then return 10 end
+        
+        local origin = humanoidRootPart.Position
+        local raycastParams = RaycastParams.new()
+        raycastParams.FilterDescendantsInstances = {character}
+        raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+        
+        local result = Workspace:Raycast(origin, direction * 10, raycastParams)
+        if result then
+            return (result.Position - origin).Magnitude
+        end
+        return 10
+    end,
+    
+    createTrickPreview = function(trickType: string, position: Vector3, direction: Vector3)
+        -- Clear previous trick previews
+        for _, model in ipairs(aiState.trickPreviewModels) do
+            if model and model.Parent then
+                model:Destroy()
+            end
+        end
+        aiState.trickPreviewModels = {}
+        
+        local previewModel = Instance.new("Model")
+        previewModel.Name = trickType .. "Preview"
+        previewModel.Parent = Workspace
+        
+        local color = Color3.new(1, 0.5, 0) -- Orange for tricks
+        
+        if trickType == "LadderFlick" then
+            -- Create momentum lines
+            for i = 1, 5 do
+                local part = Instance.new("Part")
+                part.Anchored = true
+                part.CanCollide = false
+                part.Material = Enum.Material.Neon
+                part.BrickColor = BrickColor.new(color)
+                part.Transparency = 0.3
+                part.Size = Vector3.new(0.2, 0.2, 2)
+                part.CFrame = CFrame.new(position + direction * i * 3) * CFrame.Angles(0, math.rad(i * 30), 0)
+                part.Parent = previewModel
+            end
+            
+        elseif trickType == "WallHop" then
+            -- Create alternating wall markers
+            local rightVector = humanoidRootPart.CFrame.RightVector
+            for i = 1, 3 do
+                local side = i % 2 == 1 and rightVector or -rightVector
+                local part = Instance.new("Part")
+                part.Anchored = true
+                part.CanCollide = false
+                part.Material = Enum.Material.Neon
+                part.BrickColor = BrickColor.new(color)
+                part.Transparency = 0.4
+                part.Size = Vector3.new(3, 3, 0.1)
+                part.CFrame = CFrame.new(position + side * 4 + Vector3.new(0, 2, 0), position + side * 4)
+                part.Parent = previewModel
+            end
+            
+        elseif trickType == "WrapAround" then
+            -- Create circular path
+            local center = position + direction * 3
+            for angle = 0, 360, 30 do
+                local rad = math.rad(angle)
+                local x = math.cos(rad) * 3
+                local z = math.sin(rad) * 3
+                local part = Instance.new("Part")
+                part.Anchored = true
+                part.CanCollide = false
+                part.Material = Enum.Material.Neon
+                part.BrickColor = BrickColor.new(color)
+                part.Transparency = 0.5
+                part.Size = Vector3.new(0.3, 0.3, 0.3)
+                part.CFrame = CFrame.new(center + Vector3.new(x, 2, z))
+                part.Parent = previewModel
+            end
+        end
+        
+        table.insert(aiState.trickPreviewModels, previewModel)
+        
+        -- Auto-cleanup after 3 seconds
+        task.delay(3, function()
+            if previewModel and previewModel.Parent then
+                previewModel:Destroy()
+            end
+        end)
+    end,
+    
+    attemptTrick = function(direction: Vector3): boolean
+        TrickSystem.detectWalls()
+        
+        local frontWall = aiState.wallDetectionData.frontWall
+        local leftWall = aiState.wallDetectionData.leftWall
+        local rightWall = aiState.wallDetectionData.rightWall
+        local ladderNearby = aiState.wallDetectionData.ladderNearby
+        
+        -- Add some randomness based on aggression setting
+        local shouldUseTrick = math.random() < CONFIG.TRICK_AGGRESSION
+        
+        if shouldUseTrick then
+            -- Priority: Ladder Flick > Wrap Around > Wall Hop
+            if ladderNearby and TrickSystem.canPerformTrick() then
+                return TrickSystem.executeLadderFlick(direction)
+            elseif frontWall and (leftWall or rightWall) and TrickSystem.canPerformTrick() then
+                return TrickSystem.executeWrapAround(direction)
+            elseif leftWall and rightWall and TrickSystem.canPerformTrick() then
+                return TrickSystem.executeWallHop()
+            end
+        end
+        
+        return false
+    end,
+    
+    getTrickStatistics = function(): string
+        local total = aiState.trickUsage.ladderFlick + aiState.trickUsage.wallHop + aiState.trickUsage.wrapAround
+        if total == 0 then
+            return "No tricks used yet"
+        end
+        
+        return string.format("Ladder Flicks: %d | Wall Hops: %d | Wrap Arounds: %d | Total: %d",
+            aiState.trickUsage.ladderFlick,
+            aiState.trickUsage.wallHop,
+            aiState.trickUsage.wrapAround,
+            total
+        )
+    end
+}
+
 -- Enhanced Memory System
 local MemorySystem = {
     hashWaypoint = function(waypoint: Vector3): string
@@ -187,6 +490,8 @@ local MemorySystem = {
     end,
     
     compressPath = function(waypoints: {any}): string
+        if not waypoints or #waypoints == 0 then return "" end
+        
         local compressed = {}
         for _, waypoint in ipairs(waypoints) do
             table.insert(compressed, MemorySystem.hashWaypoint(waypoint.Position))
@@ -196,6 +501,8 @@ local MemorySystem = {
     
     decompressPath = function(compressedPath: string): {Vector3}
         local waypoints = {}
+        if not compressedPath or compressedPath == "" then return waypoints end
+        
         for waypointStr in string.gmatch(compressedPath, "[^;]+") do
             local x, y, z = string.match(waypointStr, "(%d+),(%d+),(%d+)")
             if x and y and z then
@@ -274,340 +581,6 @@ local MemorySystem = {
     end,
 }
 
--- Advanced Parkour Maneuver System
-local ParkourManeuvers = {
-    -- Ladder Flick: Quick jump from ladder/truss with directional flick
-    ladderFlick = {
-        name = "Ladder Flick",
-        color = Color3.fromRGB(255, 100, 0),
-        cooldown = CONFIG.MANEUVER_COOLDOWNS.ladder_flick,
-        
-        canExecute = function(): boolean
-            -- Check if near ladder/truss
-            local origin = humanoidRootPart.Position
-            local raycastParams = RaycastParams.new()
-            raycastParams.FilterDescendantsInstances = {character}
-            raycastParams.FilterType = Enum.RaycastFilterType.Exclude
-            
-            -- Check for vertical structures (ladders/trusses)
-            for angle = 0, 360, 45 do
-                local rad = math.rad(angle)
-                local direction = Vector3.new(math.cos(rad), 0, math.sin(rad))
-                local result = Workspace:Raycast(origin, direction * CONFIG.LADDER_DETECTION_DISTANCE, raycastParams)
-                
-                if result and result.Instance then
-                    local part = result.Instance
-                    -- Check if it's a ladder-like structure (thin vertical part)
-                    if part.Size.Y > part.Size.X * 3 and part.Size.Y > part.Size.Z * 3 then
-                        return true
-                    end
-                end
-            end
-            return false
-        end,
-        
-        execute = function(targetDirection: Vector3?)
-            local direction = targetDirection or humanoidRootPart.CFrame.LookVector
-            aiState.currentManeuver = "ladder_flick"
-            
-            -- Apply powerful jump with directional flick
-            humanoid.Jump = true
-            humanoidRootPart.AssemblyLinearVelocity = Vector3.new(
-                direction.X * CONFIG.LADDER_FLICK_JUMP_FORCE,
-                CONFIG.LADDER_FLICK_JUMP_FORCE * 0.8,
-                direction.Z * CONFIG.LADDER_FLICK_JUMP_FORCE
-            )
-            
-            updateStatus("Maneuver", "Executing Ladder Flick")
-            ParkourManeuvers.showManeuverPreview("ladder_flick", humanoidRootPart.Position, direction)
-            
-            return true
-        end,
-        
-        getPreviewPoints = function(startPos: Vector3, direction: Vector3): {Vector3}
-            local points = {}
-            local steps = 10
-            
-            for i = 1, steps do
-                local t = i / steps
-                local height = math.sin(t * math.pi) * 8
-                local forward = t * 15
-                
-                local point = startPos + 
-                    direction * forward + 
-                    Vector3.new(0, height, 0)
-                
-                table.insert(points, point)
-            end
-            
-            return points
-        end
-    },
-    
-    -- Wall Hop: Rapid hopping between two walls
-    wallHop = {
-        name = "Wall Hop",
-        color = Color3.fromRGB(0, 200, 255),
-        cooldown = CONFIG.MANEUVER_COOLDOWNS.wallhop,
-        
-        canExecute = function(): boolean
-            local origin = humanoidRootPart.Position
-            local raycastParams = RaycastParams.new()
-            raycastParams.FilterDescendantsInstances = {character}
-            raycastParams.FilterType = Enum.RaycastFilterType.Exclude
-            
-            local wallCount = 0
-            local wallDirections = {}
-            
-            -- Check for walls in cardinal directions
-            local directions = {
-                Vector3.new(1, 0, 0), Vector3.new(-1, 0, 0),
-                Vector3.new(0, 0, 1), Vector3.new(0, 0, -1)
-            }
-            
-            for _, dir in ipairs(directions) do
-                local result = Workspace:Raycast(origin, dir * CONFIG.WALL_DETECTION_DISTANCE, raycastParams)
-                if result and result.Instance then
-                    wallCount += 1
-                    table.insert(wallDirections, dir)
-                end
-            end
-            
-            return wallCount >= 2
-        end,
-        
-        execute = function(): boolean
-            aiState.currentManeuver = "wall_hop"
-            aiState.maneuverData = {
-                startTime = tick(),
-                hopCount = 0,
-                maxHops = 4
-            }
-            
-            updateStatus("Maneuver", "Starting Wall Hop Sequence")
-            ParkourManeuvers.showManeuverPreview("wall_hop", humanoidRootPart.Position)
-            
-            -- Start wall hop coroutine
-            task.spawn(function()
-                while aiState.currentManeuver == "wall_hop" and 
-                      aiState.maneuverData.hopCount < aiState.maneuverData.maxHops do
-                    
-                    humanoid.Jump = true
-                    
-                    -- Alternate between left and right wall push
-                    local sideForce = aiState.maneuverData.hopCount % 2 == 0 and 1 or -1
-                    humanoidRootPart.AssemblyLinearVelocity = Vector3.new(
-                        sideForce * CONFIG.WALLHOP_JUMP_FORCE * 0.6,
-                        CONFIG.WALLHOP_JUMP_FORCE,
-                        0
-                    )
-                    
-                    aiState.maneuverData.hopCount += 1
-                    updateStatus("Maneuver", string.format("Wall Hop %d/%d", aiState.maneuverData.hopCount, aiState.maneuverData.maxHops))
-                    
-                    task.wait(0.3)
-                end
-                
-                aiState.currentManeuver = "None"
-            end)
-            
-            return true
-        end,
-        
-        getPreviewPoints = function(startPos: Vector3): {Vector3}
-            local points = {}
-            local hops = 4
-            
-            for i = 1, hops do
-                local side = i % 2 == 0 and 1 or -1
-                local height = i * 3
-                local sideOffset = side * 2
-                
-                local point = startPos + Vector3.new(sideOffset, height, 0)
-                table.insert(points, point)
-            end
-            
-            return points
-        end
-    },
-    
-    -- Wrap Around: Circular jump around pillars/walls
-    wrapAround = {
-        name = "Wrap Around",
-        color = Color3.fromRGB(150, 0, 255),
-        cooldown = CONFIG.MANEUVER_COOLDOWNS.wrap_around,
-        
-        canExecute = function(targetDirection: Vector3?): boolean
-            local origin = humanoidRootPart.Position
-            local direction = targetDirection or humanoidRootPart.CFrame.LookVector
-            local raycastParams = RaycastParams.new()
-            raycastParams.FilterDescendantsInstances = {character}
-            raycastParams.FilterType = Enum.RaycastFilterType.Exclude
-            
-            -- Check for obstacle in front
-            local frontResult = Workspace:Raycast(origin, direction * CONFIG.WALL_DETECTION_DISTANCE, raycastParams)
-            if not frontResult then return false end
-            
-            -- Check if we can go around (side clearance)
-            local sideDirections = {
-                Vector3.new(direction.Z, 0, -direction.X),  -- Right
-                Vector3.new(-direction.Z, 0, direction.X)   -- Left
-            }
-            
-            for _, sideDir in ipairs(sideDirections) do
-                local sideResult = Workspace:Raycast(origin, sideDir * 6, raycastParams)
-                if not sideResult then
-                    return true
-                end
-            end
-            
-            return false
-        end,
-        
-        execute = function(targetDirection: Vector3?): boolean
-            local direction = targetDirection or humanoidRootPart.CFrame.LookVector
-            aiState.currentManeuver = "wrap_around"
-            
-            -- Determine wrap direction (prefer right side)
-            local rightDir = Vector3.new(direction.Z, 0, -direction.X)
-            local leftDir = Vector3.new(-direction.Z, 0, direction.X)
-            
-            local raycastParams = RaycastParams.new()
-            raycastParams.FilterDescendantsInstances = {character}
-            raycastParams.FilterType = Enum.RaycastFilterType.Exclude
-            
-            local wrapDirection = rightDir
-            if Workspace:Raycast(humanoidRootPart.Position, rightDir * 6, raycastParams) then
-                wrapDirection = leftDir
-            end
-            
-            -- Execute wrap around jump
-            humanoid.Jump = true
-            humanoidRootPart.AssemblyLinearVelocity = 
-                wrapDirection * CONFIG.WRAP_AROUND_JUMP_FORCE + 
-                Vector3.new(0, CONFIG.WRAP_AROUND_JUMP_FORCE * 0.7, 0)
-            
-            updateStatus("Maneuver", "Executing Wrap Around")
-            ParkourManeuvers.showManeuverPreview("wrap_around", humanoidRootPart.Position, wrapDirection)
-            
-            return true
-        end,
-        
-        getPreviewPoints = function(startPos: Vector3, direction: Vector3): {Vector3}
-            local points = {}
-            local steps = 12
-            
-            for i = 1, steps do
-                local t = i / steps
-                local angle = t * math.pi  -- 180 degree arc
-                
-                -- Circular motion around obstacle
-                local x = math.cos(angle) * 4
-                local z = math.sin(angle) * 4
-                local height = math.sin(t * math.pi) * 5
-                
-                local point = startPos + 
-                    Vector3.new(x, height, z) +
-                    direction * 2
-                
-                table.insert(points, point)
-            end
-            
-            return points
-        end
-    }
-}
-
--- Maneuver Preview System
-ParkourManeuvers.showManeuverPreview = function(maneuverType: string, startPos: Vector3, direction: Vector3?)
-    -- Clear previous preview
-    ParkourManeuvers.clearManeuverPreview()
-    
-    local maneuver = ParkourManeuvers[maneuverType:gsub("_", "")]
-    if not maneuver then return end
-    
-    local points = maneuver.getPreviewPoints(startPos, direction or Vector3.new(0, 0, 1))
-    
-    local previewModel = Instance.new("Model")
-    previewModel.Name = "ManeuverPreview_" .. maneuverType
-    previewModel.Parent = Workspace
-    
-    -- Create trail of parts showing maneuver path
-    for i = 1, #points do
-        if i < #points then
-            local point1, point2 = points[i], points[i+1]
-            local distance = (point1 - point2).Magnitude
-            
-            local beam = Instance.new("Part")
-            beam.Anchored = true
-            beam.CanCollide = false
-            beam.Material = Enum.Material.Neon
-            beam.BrickColor = BrickColor.new(maneuver.color)
-            beam.Transparency = 0.3
-            beam.Size = Vector3.new(0.3, 0.3, distance)
-            beam.CFrame = CFrame.new(point1, point2) * CFrame.new(0, 0, -distance / 2)
-            beam.Parent = previewModel
-            
-            -- Add glow effect
-            local pointLight = Instance.new("PointLight")
-            pointLight.Brightness = 2
-            pointLight.Range = 4
-            pointLight.Color = maneuver.color
-            pointLight.Parent = beam
-        end
-        
-        -- Create position markers
-        local marker = Instance.new("Part")
-        marker.Anchored = true
-        marker.CanCollide = false
-        marker.Material = Enum.Material.Neon
-        marker.BrickColor = BrickColor.new(maneuver.color)
-        marker.Shape = Enum.PartType.Ball
-        marker.Size = Vector3.new(0.8, 0.8, 0.8)
-        marker.Position = points[i]
-        marker.Parent = previewModel
-    end
-    
-    aiState.maneuverPreview = previewModel
-    
-    -- Auto-cleanup after 5 seconds
-    task.delay(5, function()
-        if previewModel and previewModel.Parent then
-            previewModel:Destroy()
-        end
-    end)
-end
-
-ParkourManeuvers.clearManeuverPreview = function()
-    if aiState.maneuverPreview and aiState.maneuverPreview.Parent then
-        aiState.maneuverPreview:Destroy()
-    end
-    aiState.maneuverPreview = nil
-end
-
-ParkourManeuvers.attemptManeuver = function(targetDirection: Vector3?): boolean
-    -- Check cooldowns
-    for maneuverName, cooldown in pairs(aiState.maneuverCooldowns) do
-        if tick() - cooldown < CONFIG.MANEUVER_COOLDOWNS[maneuverName] then
-            return false
-        end
-    end
-    
-    -- Try maneuvers in priority order
-    if ParkourManeuvers.wrapAround.canExecute(targetDirection) then
-        aiState.maneuverCooldowns.wrap_around = tick()
-        return ParkourManeuvers.wrapAround.execute(targetDirection)
-    elseif ParkourManeuvers.ladderFlick.canExecute(targetDirection) then
-        aiState.maneuverCooldowns.ladder_flick = tick()
-        return ParkourManeuvers.ladderFlick.execute(targetDirection)
-    elseif ParkourManeuvers.wallHop.canExecute() then
-        aiState.maneuverCooldowns.wallhop = tick()
-        return ParkourManeuvers.wallHop.execute()
-    end
-    
-    return false
-end
-
 -- State machine for AI behavior
 local StateMachine = {
     states = {
@@ -615,7 +588,6 @@ local StateMachine = {
             enter = function()
                 aiState.currentCommand = "Idle"
                 updateStatus("Idle", "Waiting for command...")
-                ParkourManeuvers.clearManeuverPreview()
             end,
             update = function(deltaTime) end,
             exit = function() end
@@ -671,23 +643,21 @@ local StateMachine = {
             exit = function()
                 aiState.currentManeuver = "None"
                 aiState.maneuverData = {}
-                ParkourManeuvers.clearManeuverPreview()
             end
         },
         
-        advanced_parkour = {
+        performing_trick = {
             enter = function()
-                aiState.currentCommand = "Advanced Parkour"
-                updateStatus("Advanced Parkour", "Executing parkour maneuvers")
+                aiState.currentCommand = "Performing Trick"
             end,
             update = function(deltaTime)
-                -- In advanced parkour mode, actively look for maneuver opportunities
-                if ParkourManeuvers.attemptManeuver() then
-                    updateStatus("Advanced Parkour", "Executing: " .. aiState.currentManeuver)
+                if not aiState.isPerformingTrick then
+                    StateMachine.transitionTo("idle")
                 end
             end,
             exit = function()
-                ParkourManeuvers.clearManeuverPreview()
+                aiState.isPerformingTrick = false
+                aiState.currentTrick = "None"
             end
         }
     },
@@ -800,7 +770,7 @@ local UISystem = {
             "Calibrating Pathfinding...",
             "Loading Memory System...",
             "Analyzing Obstacle Patterns...",
-            "Loading Advanced Maneuvers..."
+            "Loading Advanced Parkour..."
         }
         
         for _, step in ipairs(loadingSteps) do
@@ -860,7 +830,7 @@ local UISystem = {
         injectDesc.Size = UDim2.new(1, -20, 0, 80)
         injectDesc.Position = UDim2.new(0, 10, 0, 80)
         injectDesc.BackgroundTransparency = 1
-        injectDesc.Text = "An adaptive AI who can complete parkour, learn from the environment, and predict player movements! Now with advanced maneuvers: Ladder Flicks, Wall Hops, and Wrap Arounds!"
+        injectDesc.Text = "An adaptive AI with advanced parkour: Ladder Flicks, Wallhops, and Wrap Arounds!"
         injectDesc.TextColor3 = CONFIG.TEXT_COLOR
         injectDesc.TextWrapped = true
         injectDesc.Font = CONFIG.FONT
@@ -974,7 +944,16 @@ local UISystem = {
         maneuverValue.TextXAlignment = Enum.TextXAlignment.Left
         maneuverValue.Parent = statusSidebar
         
-        local toggleButton = UISystem.createStyledTextButton("Hide", UDim2.new(1, 0, 0, 40), 8)
+        local trickTitle = UISystem.createStyledTextLabel("CURRENT TRICK", UDim2.new(1, 0, 0, 30), 8)
+        trickTitle.TextXAlignment = Enum.TextXAlignment.Left
+        trickTitle.Parent = statusSidebar
+        
+        local trickValue = UISystem.createStyledTextLabel("None", UDim2.new(1, 0, 0, 30), 9)
+        trickValue.Name = "TrickValue"
+        trickValue.TextXAlignment = Enum.TextXAlignment.Left
+        trickValue.Parent = statusSidebar
+        
+        local toggleButton = UISystem.createStyledTextButton("Hide", UDim2.new(1, 0, 0, 40), 10)
         toggleButton.Parent = statusSidebar
         
         local isVisible = true
@@ -1017,7 +996,7 @@ local UISystem = {
         commandTextBox.Position = UDim2.new(0, 10, 0, 5)
         commandTextBox.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
         commandTextBox.BorderSizePixel = 0
-        commandTextBox.PlaceholderText = "Enter command (e.g., /follow PlayerName, /smartparkour, /advanced)"
+        commandTextBox.PlaceholderText = "Enter command (e.g., /follow PlayerName, /smartparkour, /trickstats)"
         commandTextBox.Text = ""
         commandTextBox.TextColor3 = CONFIG.TEXT_COLOR
         commandTextBox.PlaceholderColor3 = Color3.fromRGB(150, 150, 150)
@@ -1084,32 +1063,6 @@ local UISystem = {
         
         rightButton.MouseButton1Click:Connect(function()
             processCommand("/rungoal")
-        end)
-        
-        -- Advanced maneuver buttons
-        local advancedFrame = Instance.new("Frame")
-        advancedFrame.Name = "AdvancedControls"
-        advancedFrame.Size = UDim2.new(0, 150 * CONFIG.MOBILE_SCALE, 0, 50 * CONFIG.MOBILE_SCALE)
-        advancedFrame.Position = UDim2.new(0, 20, 1, -280 * CONFIG.MOBILE_SCALE)
-        advancedFrame.BackgroundTransparency = 1
-        advancedFrame.Parent = parent
-        
-        local ladderButton = UISystem.createStyledTextButton("Ladder", UDim2.new(0, 70 * CONFIG.MOBILE_SCALE, 1, 0), 1)
-        ladderButton.Position = UDim2.new(0, 0, 0, 0)
-        ladderButton.BackgroundColor3 = ParkourManeuvers.ladderFlick.color
-        ladderButton.Parent = advancedFrame
-        
-        ladderButton.MouseButton1Click:Connect(function()
-            ParkourManeuvers.ladderFlick.execute()
-        end)
-        
-        local wallhopButton = UISystem.createStyledTextButton("WallHop", UDim2.new(0, 70 * CONFIG.MOBILE_SCALE, 1, 0), 2)
-        wallhopButton.Position = UDim2.new(0, 80 * CONFIG.MOBILE_SCALE, 0, 0)
-        wallhopButton.BackgroundColor3 = ParkourManeuvers.wallHop.color
-        wallhopButton.Parent = advancedFrame
-        
-        wallhopButton.MouseButton1Click:Connect(function()
-            ParkourManeuvers.wallHop.execute()
         end)
     end,
     
@@ -1191,8 +1144,10 @@ local PerformanceMonitor = {
     end
 }
 
--- Obstacle Analysis Functions
+-- Obstacle Analysis Functions with advanced trick detection
 local function analyzeObstacle(direction: Vector3): string
+    if not humanoidRootPart then return "none" end
+    
     local origin = humanoidRootPart.Position
     local lookDirection = direction.Unit
     
@@ -1200,6 +1155,24 @@ local function analyzeObstacle(direction: Vector3): string
     raycastParams.FilterDescendantsInstances = {character}
     raycastParams.FilterType = Enum.RaycastFilterType.Exclude
     
+    -- First, check for advanced trick opportunities
+    TrickSystem.detectWalls()
+    
+    local frontWall = aiState.wallDetectionData.frontWall
+    local leftWall = aiState.wallDetectionData.leftWall
+    local rightWall = aiState.wallDetectionData.rightWall
+    local ladderNearby = aiState.wallDetectionData.ladderNearby
+    
+    -- Check for trick opportunities first
+    if ladderNearby and TrickSystem.canPerformTrick() then
+        return "ladder_flick_opportunity"
+    elseif frontWall and (leftWall or rightWall) and TrickSystem.canPerformTrick() then
+        return "wrap_around_opportunity"
+    elseif leftWall and rightWall and TrickSystem.canPerformTrick() then
+        return "wallhop_opportunity"
+    end
+    
+    -- Then check for basic obstacles
     local downResult = Workspace:Raycast(origin + lookDirection * 5, Vector3.new(0, -10, 0), raycastParams)
     if not downResult then
         return "gap"
@@ -1224,6 +1197,8 @@ local function analyzeObstacle(direction: Vector3): string
 end
 
 local function executeManeuver(maneuverType: string, direction: Vector3)
+    if not humanoid then return end
+    
     if aiState.maneuverCooldowns[maneuverType] and tick() - aiState.maneuverCooldowns[maneuverType] < 2 then
         return
     end
@@ -1245,6 +1220,12 @@ local function executeManeuver(maneuverType: string, direction: Vector3)
         humanoid:Move(sideDirection)
     elseif maneuverType == "moving_platform" then
         updateStatus("Maneuver", "Timing jump to moving platform")
+    elseif maneuverType == "ladder_flick_opportunity" then
+        TrickSystem.executeLadderFlick(direction)
+    elseif maneuverType == "wrap_around_opportunity" then
+        TrickSystem.executeWrapAround(direction)
+    elseif maneuverType == "wallhop_opportunity" then
+        TrickSystem.executeWallHop()
     end
 end
 
@@ -1269,8 +1250,10 @@ local function predictPlayerPosition(targetPlayer: Player): Vector3
     return predictedPosition
 end
 
--- Enhanced Parkour Functions
+-- Enhanced Parkour Functions with trick integration
 local function analyzeParkourChain(): {Vector3}
+    if not humanoidRootPart then return {} end
+    
     local checkpoints = {}
     local origin = humanoidRootPart.Position
     
@@ -1354,6 +1337,8 @@ local function showPathPreview(paths: {any})
 end
 
 local function calculatePath(goal: Vector3): {any}?
+    if not humanoidRootPart then return nil end
+    
     local paths = {}
     local baseGoal = goal
     
@@ -1467,8 +1452,9 @@ local function calculatePath(goal: Vector3): {any}?
     return nil
 end
 
+-- Enhanced moveToGoal function with aggressive trick usage for rungoal
 local function moveToGoal()
-    if not aiState.goalPosition or not aiState.isRunning then return end
+    if not aiState.goalPosition or not aiState.isRunning or not humanoidRootPart then return end
     
     local paths = calculatePath(aiState.goalPosition)
     if not paths then
@@ -1493,14 +1479,22 @@ local function moveToGoal()
         local direction = (waypoint.Position - humanoidRootPart.Position).Unit
         local obstacleType = analyzeObstacle(direction)
         
-        -- Check for advanced maneuvers first
-        if ParkourManeuvers.attemptManeuver(direction) then
-            task.wait(1)
-            moveToGoal()
-            return
+        -- Enhanced trick system for rungoal - more aggressive trick usage
+        if aiState.currentCommand == "Running" then
+            -- For rungoal, use tricks more aggressively
+            CONFIG.TRICK_AGGRESSION = 0.8 -- Higher aggression for rungoal
+        else
+            CONFIG.TRICK_AGGRESSION = 0.7 -- Normal aggression for other commands
         end
         
-        if obstacleType ~= "none" and aiState.currentManeuver == "None" then
+        -- Attempt tricks before basic maneuvers
+        if obstacleType:find("opportunity") and TrickSystem.canPerformTrick() then
+            if TrickSystem.attemptTrick(direction) then
+                task.wait(0.3) -- Allow trick to complete
+                moveToGoal() -- Recalculate after trick
+                return
+            end
+        elseif obstacleType ~= "none" and aiState.currentManeuver == "None" then
             executeManeuver(obstacleType, direction)
             task.wait(1)
             aiState.currentManeuver = "None"
@@ -1523,6 +1517,8 @@ local function moveToGoal()
 end
 
 local function processCommand(input: string)
+    if not input or input == "" then return end
+    
     local args = string.split(string.lower(input), " ")
     local command = args[1]
     
@@ -1555,6 +1551,8 @@ local function processCommand(input: string)
         updateStatus("Parkour Run", "Scanning for highest point...")
         StateMachine.transitionTo("parkour")
         aiState.goalPosition = nil
+        
+        if not humanoidRootPart then return end
         
         local origin = humanoidRootPart.Position
         local direction = Vector3.new(0, 1, 0)
@@ -1593,7 +1591,7 @@ local function processCommand(input: string)
                 local timeout = tick() + 10
                 
                 while not reachedCheckpoint and tick() < timeout do
-                    if (humanoidRootPart.Position - checkpoints[i]).Magnitude < 5 then
+                    if humanoidRootPart and (humanoidRootPart.Position - checkpoints[i]).Magnitude < 5 then
                         reachedCheckpoint = true
                     end
                     task.wait(0.5)
@@ -1618,6 +1616,8 @@ local function processCommand(input: string)
         if goalHologram then
             goalHologram:Destroy()
         end
+        
+        if not humanoidRootPart then return end
         
         aiState.goalPosition = humanoidRootPart.Position
         StateMachine.transitionTo("idle")
@@ -1646,36 +1646,33 @@ local function processCommand(input: string)
     elseif command == "/rungoal" then
         if aiState.goalPosition then
             StateMachine.transitionTo("idle")
-            updateStatus("Running", "Moving to set goal...")
-            moveToGoal()
+            updateStatus("Running", "Moving to set goal with advanced parkour...")
+            
+            -- Enhanced path calculation for rungoal with trick optimization
+            if humanoidRootPart then
+                local directDistance = (humanoidRootPart.Position - aiState.goalPosition).Magnitude
+                
+                -- If goal is relatively close, use more aggressive trick approach
+                if directDistance < 50 then
+                    updateStatus("Running", "Using aggressive parkour approach")
+                    CONFIG.TRICK_AGGRESSION = 0.9 -- Very high aggression for short distances
+                else
+                    CONFIG.TRICK_AGGRESSION = 0.8 -- High aggression for normal distances
+                end
+                
+                moveToGoal()
+            end
         else
             updateStatus("Error", "No goal set. Use /setgoal first.")
         end
         
-    elseif command == "/advanced" then
-        StateMachine.transitionTo("advanced_parkour")
-        updateStatus("Advanced Parkour", "Activated - will use advanced maneuvers")
-        
-    elseif command == "/ladderflick" then
-        if ParkourManeuvers.ladderFlick.execute() then
-            updateStatus("Maneuver", "Executing Ladder Flick")
-        else
-            updateStatus("Maneuver", "Cannot execute Ladder Flick - conditions not met")
-        end
-        
-    elseif command == "/wallhop" then
-        if ParkourManeuvers.wallHop.execute() then
-            updateStatus("Maneuver", "Executing Wall Hop")
-        else
-            updateStatus("Maneuver", "Cannot execute Wall Hop - conditions not met")
-        end
-        
-    elseif command == "/wraparound" then
-        if ParkourManeuvers.wrapAround.execute() then
-            updateStatus("Maneuver", "Executing Wrap Around")
-        else
-            updateStatus("Maneuver", "Cannot execute Wrap Around - conditions not met")
-        end
+    elseif command == "/trickstats" then
+        local stats = TrickSystem.getTrickStatistics()
+        updateStatus("Trick Stats", stats)
+        StarterGui:SetCore("ChatMakeSystemMessage", {
+            Text = "[KYNEX] " .. stats;
+            Color = Color3.new(0, 1, 1);
+        })
         
     elseif command == "/clearmemory" then
         aiState.pathMemory.successfulPaths = {}
@@ -1688,19 +1685,40 @@ local function processCommand(input: string)
     end
 end
 
+-- Fixed updateStatus function to properly handle UI elements
 local function updateStatus(status: string, details: string)
+    -- First, update the aiState
+    aiState.currentCommand = status
+    
+    -- Then, try to update the UI elements
     if UIState.elements.statusSidebar then
         local statusValue = UIState.elements.statusSidebar:FindFirstChild("StatusValue")
         local commandValue = UIState.elements.statusSidebar:FindFirstChild("CommandValue")
         local maneuverValue = UIState.elements.statusSidebar:FindFirstChild("ManeuverValue")
+        local trickValue = UIState.elements.statusSidebar:FindFirstChild("TrickValue")
         
-        if statusValue then statusValue.Text = status end
-        if commandValue then commandValue.Text = details end
-        if maneuverValue then maneuverValue.Text = aiState.currentManeuver end
+        if statusValue then 
+            statusValue.Text = status 
+        end
+        
+        if commandValue then 
+            commandValue.Text = details 
+        end
+        
+        if maneuverValue then 
+            maneuverValue.Text = aiState.currentManeuver or "None"
+        end
+        
+        if trickValue then 
+            trickValue.Text = aiState.currentTrick or "None"
+        end
     end
+    
+    -- Also log the status update
+    ErrorHandler.log("INFO", "Status: %s - %s", status, details)
 end
 
--- Main game loop
+-- Main game loop with trick integration
 RunService.Heartbeat:Connect(function()
     if not aiState.isRunning then return end
     
@@ -1708,28 +1726,35 @@ RunService.Heartbeat:Connect(function()
     
     StateMachine.update(deltaTime)
     
-    local currentPosition = humanoidRootPart.Position
-    local distanceMoved = (currentPosition - aiState.lastPosition).Magnitude
+    -- Update trick detection continuously
+    TrickSystem.detectWalls()
     
-    if distanceMoved < 0.5 then
-        aiState.stuckTimer += deltaTime
-        if aiState.stuckTimer > CONFIG.STUCK_TIME_THRESHOLD then
-            updateStatus("Stuck", "Recalculating path...")
-            aiState.stuckTimer = 0
-            
-            if aiState.lastWaypointIndex > 0 and aiState.currentPath[aiState.lastWaypointIndex] then
-                MemorySystem.updatePathMemory(aiState.currentPath[aiState.lastWaypointIndex].Position, false)
+    if humanoidRootPart then
+        local currentPosition = humanoidRootPart.Position
+        local distanceMoved = (currentPosition - aiState.lastPosition).Magnitude
+        
+        if distanceMoved < 0.5 then
+            aiState.stuckTimer += deltaTime
+            if aiState.stuckTimer > CONFIG.STUCK_TIME_THRESHOLD then
+                updateStatus("Stuck", "Recalculating path...")
+                aiState.stuckTimer = 0
+                
+                if aiState.lastWaypointIndex > 0 and aiState.currentPath[aiState.lastWaypointIndex] then
+                    MemorySystem.updatePathMemory(aiState.currentPath[aiState.lastWaypointIndex].Position, false)
+                end
+                
+                if humanoid then
+                    humanoid.Jump = true
+                    task.wait(0.5)
+                    moveToGoal()
+                end
             end
-            
-            humanoid.Jump = true
-            task.wait(0.5)
-            moveToGoal()
+        else
+            aiState.stuckTimer = 0
         end
-    else
-        aiState.stuckTimer = 0
+        
+        aiState.lastPosition = currentPosition
     end
-    
-    aiState.lastPosition = currentPosition
     
     performanceMonitor.frameCount += 1
     if performanceMonitor.frameCount % 60 == 0 then
