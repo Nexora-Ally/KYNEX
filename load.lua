@@ -14,20 +14,20 @@ local ContextActionService = game:GetService("ContextActionService")
 local CoreGui = game:GetService("CoreGui")
 
 local player = Players.LocalPlayer
-local character = player.Character or player.CharacterAdded:Wait()
+local character = player.CharacterAdded:Wait() or player.Character
 local humanoid = character:WaitForChild("Humanoid")
 local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
 
--- 全局变量定义
+-- Global variables
 local goalHologram = nil
 
--- Enhanced configuration with mobile support
+-- Enhanced configuration with advanced maneuvers
 local CONFIG = {
     FOLLOW_DISTANCE = 5,
     RECALCULATION_INTERVAL = 0.5,
     STUCK_TIME_THRESHOLD = 3,
     PARKOUR_SCAN_HEIGHT = 500,
-    PREDICTION_TIME = 0.8, -- Time in seconds to predict player movement
+    PREDICTION_TIME = 0.8,
     
     PRIMARY_COLOR = Color3.fromRGB(0, 50, 150),
     SECONDARY_COLOR = Color3.fromRGB(20, 20, 20),
@@ -43,25 +43,34 @@ local CONFIG = {
         Color3.fromRGB(150, 0, 255),
     },
     
-    -- Enhanced AI parameters
-    MEMORY_RETENTION_TIME = 300, -- How long to remember paths (in seconds)
-    MAX_FAILED_ATTEMPTS = 3, -- Max attempts before marking a waypoint as dangerous
-    OBSTACLE_SCAN_DISTANCE = 15, -- Distance to scan for obstacles
-    PARKOUR_CHECKPOINT_DISTANCE = 20, -- Distance between parkour checkpoints
+    -- Advanced maneuver settings
+    LADDER_FLICK_JUMP_FORCE = 75,
+    WALLHOP_JUMP_FORCE = 50,
+    WRAP_AROUND_JUMP_FORCE = 60,
+    WALL_DETECTION_DISTANCE = 8,
+    LADDER_DETECTION_DISTANCE = 6,
+    PILLAR_DETECTION_ANGLE = 45,
     
-    -- Mobile UI parameters
-    MOBILE_SCALE = 1.5, -- Scale factor for mobile UI elements
-    TOUCH_TARGET_SIZE = 50, -- Minimum size for touch targets in pixels
-    HAPTIC_FEEDBACK_INTENSITY = 0.5, -- Intensity of haptic feedback (0-1)
+    MANEUVER_COOLDOWNS = {
+        ladder_flick = 2,
+        wallhop = 1.5,
+        wrap_around = 2,
+    },
     
-    -- Performance parameters
-    MAX_PATH_CACHE_SIZE = 50, -- Maximum number of paths to cache
-    MEMORY_CLEANUP_INTERVAL = 60, -- Seconds between memory cleanups
-    PERFORMANCE_MONITOR_INTERVAL = 10, -- Seconds between performance checks
+    MEMORY_RETENTION_TIME = 300,
+    MAX_FAILED_ATTEMPTS = 3,
+    OBSTACLE_SCAN_DISTANCE = 15,
+    PARKOUR_CHECKPOINT_DISTANCE = 20,
     
-    -- Delta time parameters
-    MAX_DELTA_TIME = 0.1, -- Maximum delta time to prevent large jumps
-    SMOOTH_FACTOR = 0.2, -- Smoothing factor for interpolated movements
+    MOBILE_SCALE = 1.5,
+    TOUCH_TARGET_SIZE = 50,
+    
+    MAX_PATH_CACHE_SIZE = 50,
+    MEMORY_CLEANUP_INTERVAL = 60,
+    PERFORMANCE_MONITOR_INTERVAL = 10,
+    
+    MAX_DELTA_TIME = 0.1,
+    SMOOTH_FACTOR = 0.2,
 }
 
 -- Device detection
@@ -74,7 +83,7 @@ local UIState = {
     isVisible = true,
     isResponsive = true,
     lastRefreshTime = 0,
-    refreshInterval = 5, -- Seconds
+    refreshInterval = 5,
     elements = {},
 }
 
@@ -87,7 +96,7 @@ local performanceMonitor = {
     lastMemoryCheck = tick(),
 }
 
--- Enhanced AI State with memory and prediction
+-- Enhanced AI State with maneuver tracking
 local aiState = {
     isRunning = false,
     currentCommand = "Idle",
@@ -99,30 +108,33 @@ local aiState = {
     stuckTimer = 0,
     lastPosition = humanoidRootPart.Position,
     pathCache = {},
-    lastPathCalculation = 0, -- Added missing state variable
+    lastPathCalculation = 0,
     
-    -- Memory system with optimized data structures
+    -- Advanced maneuver state
+    currentManeuver = "None",
+    maneuverData = {},
+    maneuverCooldowns = {},
+    maneuverPreview = nil,
+    
+    -- Environment detection
+    nearbyLadders = {},
+    nearbyWalls = {},
+    nearbyPillars = {},
+    
     pathMemory = {
-        successfulPaths = {}, -- Stores successful paths with timestamps
-        failedWaypoints = {}, -- Stores failed waypoints with attempt counts
-        efficientWaypoints = {}, -- Stores waypoints that led to quick completion
-        compressedPaths = {}, -- Compressed representation of frequently used paths
+        successfulPaths = {},
+        failedWaypoints = {},
+        efficientWaypoints = {},
+        compressedPaths = {},
     },
     
-    -- Maneuver system
-    currentManeuver = "None", -- Current special maneuver being performed
-    maneuverData = {}, -- Data related to current maneuver
-    maneuverCooldowns = {}, -- Cooldowns for different maneuvers
+    predictedPositions = {},
     
-    -- Prediction system
-    predictedPositions = {}, -- Stores predicted positions for following
-    
-    -- State machine
-    state = "idle", -- Current AI state
-    stateHistory = {}, -- History of state transitions
+    state = "idle",
+    stateHistory = {},
 }
 
--- Error handling and logging system (Roblox compatible)
+-- Fixed ErrorHandler to avoid nil indexing
 local ErrorHandler = {
     maxLogEntries = 100,
     
@@ -130,10 +142,8 @@ local ErrorHandler = {
         local formattedMessage = string.format(message, ...)
         local timestamp = os.date("%H:%M:%S", tick())
         
-        -- Print to console with timestamp and level
         print(string.format("[%s][%s] %s", timestamp, level, formattedMessage))
         
-        -- If error level, try to recover
         if level == "ERROR" then
             ErrorHandler.attemptRecovery()
         end
@@ -142,14 +152,12 @@ local ErrorHandler = {
     attemptRecovery = function()
         ErrorHandler.log("INFO", "Attempting error recovery")
         
-        -- Reset AI state if needed
         if aiState.isRunning then
             aiState.isRunning = false
             task.wait(0.5)
             aiState.isRunning = true
         end
         
-        -- Refresh UI if needed
         if not UIState.isResponsive then
             UIState.lastRefreshTime = 0
         end
@@ -164,15 +172,12 @@ local DeltaTimeManager = {
         local currentTime = tick()
         local delta = currentTime - DeltaTimeManager.lastTime
         DeltaTimeManager.lastTime = currentTime
-        
-        -- Cap delta time to prevent large jumps
         return math.min(delta, CONFIG.MAX_DELTA_TIME)
     end,
 }
 
--- Enhanced Memory System with optimized data structures
+-- Enhanced Memory System
 local MemorySystem = {
-    -- Hash function for waypoint keys
     hashWaypoint = function(waypoint: Vector3): string
         return string.format("%d,%d,%d", 
             math.floor(waypoint.X/5), 
@@ -181,7 +186,6 @@ local MemorySystem = {
         )
     end,
     
-    -- Compress path data for storage
     compressPath = function(waypoints: {any}): string
         local compressed = {}
         for _, waypoint in ipairs(waypoints) do
@@ -190,7 +194,6 @@ local MemorySystem = {
         return table.concat(compressed, ";")
     end,
     
-    -- Decompress path data
     decompressPath = function(compressedPath: string): {Vector3}
         local waypoints = {}
         for waypointStr in string.gmatch(compressedPath, "[^;]+") do
@@ -202,59 +205,49 @@ local MemorySystem = {
         return waypoints
     end,
     
-    -- Update path memory with prioritization
     updatePathMemory = function(waypoint: Vector3, success: boolean)
         local key = MemorySystem.hashWaypoint(waypoint)
         
         if success then
-            -- Mark as efficient if successful
             aiState.pathMemory.efficientWaypoints[key] = tick()
             
-            -- Remove from failed if it was there
             if aiState.pathMemory.failedWaypoints[key] then
                 aiState.pathMemory.failedWaypoints[key] = nil
             end
         else
-            -- Increment failed attempts
             if not aiState.pathMemory.failedWaypoints[key] then
                 aiState.pathMemory.failedWaypoints[key] = 1
             else
                 aiState.pathMemory.failedWaypoints[key] = aiState.pathMemory.failedWaypoints[key] + 1
             end
             
-            -- If failed too many times, mark as dangerous
             if aiState.pathMemory.failedWaypoints[key] >= CONFIG.MAX_FAILED_ATTEMPTS then
                 aiState.pathMemory.failedWaypoints[key] = "dangerous"
             end
         end
     end,
     
-    -- Clean old memory entries with prioritization
     cleanOldMemory = function()
         local currentTime = tick()
         
-        -- Clean old successful paths
         for key, timestamp in pairs(aiState.pathMemory.successfulPaths) do
             if currentTime - timestamp > CONFIG.MEMORY_RETENTION_TIME then
                 aiState.pathMemory.successfulPaths[key] = nil
             end
         end
         
-        -- Clean old efficient waypoints
         for key, timestamp in pairs(aiState.pathMemory.efficientWaypoints) do
             if currentTime - timestamp > CONFIG.MEMORY_RETENTION_TIME then
                 aiState.pathMemory.efficientWaypoints[key] = nil
             end
         end
         
-        -- Limit path cache size
         local pathCacheSize = 0
         for _ in pairs(aiState.pathCache) do
             pathCacheSize = pathCacheSize + 1
         end
         
         if pathCacheSize > CONFIG.MAX_PATH_CACHE_SIZE then
-            -- Remove oldest entries
             local entriesToRemove = {}
             for key, pathData in pairs(aiState.pathCache) do
                 table.insert(entriesToRemove, {key = key, timestamp = pathData.timestamp})
@@ -270,19 +263,350 @@ local MemorySystem = {
         end
     end,
     
-    -- Validate memory entries for corruption
     validateMemory = function(): boolean
-        -- Check for corrupted entries
         for key, value in pairs(aiState.pathMemory.failedWaypoints) do
             if type(value) ~= "number" and value ~= "dangerous" then
                 aiState.pathMemory.failedWaypoints[key] = nil
                 ErrorHandler.log("WARN", "Removed corrupted memory entry: %s", key)
             end
         end
-        
         return true
     end,
 }
+
+-- Advanced Parkour Maneuver System
+local ParkourManeuvers = {
+    -- Ladder Flick: Quick jump from ladder/truss with directional flick
+    ladderFlick = {
+        name = "Ladder Flick",
+        color = Color3.fromRGB(255, 100, 0),
+        cooldown = CONFIG.MANEUVER_COOLDOWNS.ladder_flick,
+        
+        canExecute = function(): boolean
+            -- Check if near ladder/truss
+            local origin = humanoidRootPart.Position
+            local raycastParams = RaycastParams.new()
+            raycastParams.FilterDescendantsInstances = {character}
+            raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+            
+            -- Check for vertical structures (ladders/trusses)
+            for angle = 0, 360, 45 do
+                local rad = math.rad(angle)
+                local direction = Vector3.new(math.cos(rad), 0, math.sin(rad))
+                local result = Workspace:Raycast(origin, direction * CONFIG.LADDER_DETECTION_DISTANCE, raycastParams)
+                
+                if result and result.Instance then
+                    local part = result.Instance
+                    -- Check if it's a ladder-like structure (thin vertical part)
+                    if part.Size.Y > part.Size.X * 3 and part.Size.Y > part.Size.Z * 3 then
+                        return true
+                    end
+                end
+            end
+            return false
+        end,
+        
+        execute = function(targetDirection: Vector3?)
+            local direction = targetDirection or humanoidRootPart.CFrame.LookVector
+            aiState.currentManeuver = "ladder_flick"
+            
+            -- Apply powerful jump with directional flick
+            humanoid.Jump = true
+            humanoidRootPart.AssemblyLinearVelocity = Vector3.new(
+                direction.X * CONFIG.LADDER_FLICK_JUMP_FORCE,
+                CONFIG.LADDER_FLICK_JUMP_FORCE * 0.8,
+                direction.Z * CONFIG.LADDER_FLICK_JUMP_FORCE
+            )
+            
+            updateStatus("Maneuver", "Executing Ladder Flick")
+            ParkourManeuvers.showManeuverPreview("ladder_flick", humanoidRootPart.Position, direction)
+            
+            return true
+        end,
+        
+        getPreviewPoints = function(startPos: Vector3, direction: Vector3): {Vector3}
+            local points = {}
+            local steps = 10
+            
+            for i = 1, steps do
+                local t = i / steps
+                local height = math.sin(t * math.pi) * 8
+                local forward = t * 15
+                
+                local point = startPos + 
+                    direction * forward + 
+                    Vector3.new(0, height, 0)
+                
+                table.insert(points, point)
+            end
+            
+            return points
+        end
+    },
+    
+    -- Wall Hop: Rapid hopping between two walls
+    wallHop = {
+        name = "Wall Hop",
+        color = Color3.fromRGB(0, 200, 255),
+        cooldown = CONFIG.MANEUVER_COOLDOWNS.wallhop,
+        
+        canExecute = function(): boolean
+            local origin = humanoidRootPart.Position
+            local raycastParams = RaycastParams.new()
+            raycastParams.FilterDescendantsInstances = {character}
+            raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+            
+            local wallCount = 0
+            local wallDirections = {}
+            
+            -- Check for walls in cardinal directions
+            local directions = {
+                Vector3.new(1, 0, 0), Vector3.new(-1, 0, 0),
+                Vector3.new(0, 0, 1), Vector3.new(0, 0, -1)
+            }
+            
+            for _, dir in ipairs(directions) do
+                local result = Workspace:Raycast(origin, dir * CONFIG.WALL_DETECTION_DISTANCE, raycastParams)
+                if result and result.Instance then
+                    wallCount += 1
+                    table.insert(wallDirections, dir)
+                end
+            end
+            
+            return wallCount >= 2
+        end,
+        
+        execute = function(): boolean
+            aiState.currentManeuver = "wall_hop"
+            aiState.maneuverData = {
+                startTime = tick(),
+                hopCount = 0,
+                maxHops = 4
+            }
+            
+            updateStatus("Maneuver", "Starting Wall Hop Sequence")
+            ParkourManeuvers.showManeuverPreview("wall_hop", humanoidRootPart.Position)
+            
+            -- Start wall hop coroutine
+            task.spawn(function()
+                while aiState.currentManeuver == "wall_hop" and 
+                      aiState.maneuverData.hopCount < aiState.maneuverData.maxHops do
+                    
+                    humanoid.Jump = true
+                    
+                    -- Alternate between left and right wall push
+                    local sideForce = aiState.maneuverData.hopCount % 2 == 0 and 1 or -1
+                    humanoidRootPart.AssemblyLinearVelocity = Vector3.new(
+                        sideForce * CONFIG.WALLHOP_JUMP_FORCE * 0.6,
+                        CONFIG.WALLHOP_JUMP_FORCE,
+                        0
+                    )
+                    
+                    aiState.maneuverData.hopCount += 1
+                    updateStatus("Maneuver", string.format("Wall Hop %d/%d", aiState.maneuverData.hopCount, aiState.maneuverData.maxHops))
+                    
+                    task.wait(0.3)
+                end
+                
+                aiState.currentManeuver = "None"
+            end)
+            
+            return true
+        end,
+        
+        getPreviewPoints = function(startPos: Vector3): {Vector3}
+            local points = {}
+            local hops = 4
+            
+            for i = 1, hops do
+                local side = i % 2 == 0 and 1 or -1
+                local height = i * 3
+                local sideOffset = side * 2
+                
+                local point = startPos + Vector3.new(sideOffset, height, 0)
+                table.insert(points, point)
+            end
+            
+            return points
+        end
+    },
+    
+    -- Wrap Around: Circular jump around pillars/walls
+    wrapAround = {
+        name = "Wrap Around",
+        color = Color3.fromRGB(150, 0, 255),
+        cooldown = CONFIG.MANEUVER_COOLDOWNS.wrap_around,
+        
+        canExecute = function(targetDirection: Vector3?): boolean
+            local origin = humanoidRootPart.Position
+            local direction = targetDirection or humanoidRootPart.CFrame.LookVector
+            local raycastParams = RaycastParams.new()
+            raycastParams.FilterDescendantsInstances = {character}
+            raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+            
+            -- Check for obstacle in front
+            local frontResult = Workspace:Raycast(origin, direction * CONFIG.WALL_DETECTION_DISTANCE, raycastParams)
+            if not frontResult then return false end
+            
+            -- Check if we can go around (side clearance)
+            local sideDirections = {
+                Vector3.new(direction.Z, 0, -direction.X),  -- Right
+                Vector3.new(-direction.Z, 0, direction.X)   -- Left
+            }
+            
+            for _, sideDir in ipairs(sideDirections) do
+                local sideResult = Workspace:Raycast(origin, sideDir * 6, raycastParams)
+                if not sideResult then
+                    return true
+                end
+            end
+            
+            return false
+        end,
+        
+        execute = function(targetDirection: Vector3?): boolean
+            local direction = targetDirection or humanoidRootPart.CFrame.LookVector
+            aiState.currentManeuver = "wrap_around"
+            
+            -- Determine wrap direction (prefer right side)
+            local rightDir = Vector3.new(direction.Z, 0, -direction.X)
+            local leftDir = Vector3.new(-direction.Z, 0, direction.X)
+            
+            local raycastParams = RaycastParams.new()
+            raycastParams.FilterDescendantsInstances = {character}
+            raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+            
+            local wrapDirection = rightDir
+            if Workspace:Raycast(humanoidRootPart.Position, rightDir * 6, raycastParams) then
+                wrapDirection = leftDir
+            end
+            
+            -- Execute wrap around jump
+            humanoid.Jump = true
+            humanoidRootPart.AssemblyLinearVelocity = 
+                wrapDirection * CONFIG.WRAP_AROUND_JUMP_FORCE + 
+                Vector3.new(0, CONFIG.WRAP_AROUND_JUMP_FORCE * 0.7, 0)
+            
+            updateStatus("Maneuver", "Executing Wrap Around")
+            ParkourManeuvers.showManeuverPreview("wrap_around", humanoidRootPart.Position, wrapDirection)
+            
+            return true
+        end,
+        
+        getPreviewPoints = function(startPos: Vector3, direction: Vector3): {Vector3}
+            local points = {}
+            local steps = 12
+            
+            for i = 1, steps do
+                local t = i / steps
+                local angle = t * math.pi  -- 180 degree arc
+                
+                -- Circular motion around obstacle
+                local x = math.cos(angle) * 4
+                local z = math.sin(angle) * 4
+                local height = math.sin(t * math.pi) * 5
+                
+                local point = startPos + 
+                    Vector3.new(x, height, z) +
+                    direction * 2
+                
+                table.insert(points, point)
+            end
+            
+            return points
+        end
+    }
+}
+
+-- Maneuver Preview System
+ParkourManeuvers.showManeuverPreview = function(maneuverType: string, startPos: Vector3, direction: Vector3?)
+    -- Clear previous preview
+    ParkourManeuvers.clearManeuverPreview()
+    
+    local maneuver = ParkourManeuvers[maneuverType:gsub("_", "")]
+    if not maneuver then return end
+    
+    local points = maneuver.getPreviewPoints(startPos, direction or Vector3.new(0, 0, 1))
+    
+    local previewModel = Instance.new("Model")
+    previewModel.Name = "ManeuverPreview_" .. maneuverType
+    previewModel.Parent = Workspace
+    
+    -- Create trail of parts showing maneuver path
+    for i = 1, #points do
+        if i < #points then
+            local point1, point2 = points[i], points[i+1]
+            local distance = (point1 - point2).Magnitude
+            
+            local beam = Instance.new("Part")
+            beam.Anchored = true
+            beam.CanCollide = false
+            beam.Material = Enum.Material.Neon
+            beam.BrickColor = BrickColor.new(maneuver.color)
+            beam.Transparency = 0.3
+            beam.Size = Vector3.new(0.3, 0.3, distance)
+            beam.CFrame = CFrame.new(point1, point2) * CFrame.new(0, 0, -distance / 2)
+            beam.Parent = previewModel
+            
+            -- Add glow effect
+            local pointLight = Instance.new("PointLight")
+            pointLight.Brightness = 2
+            pointLight.Range = 4
+            pointLight.Color = maneuver.color
+            pointLight.Parent = beam
+        end
+        
+        -- Create position markers
+        local marker = Instance.new("Part")
+        marker.Anchored = true
+        marker.CanCollide = false
+        marker.Material = Enum.Material.Neon
+        marker.BrickColor = BrickColor.new(maneuver.color)
+        marker.Shape = Enum.PartType.Ball
+        marker.Size = Vector3.new(0.8, 0.8, 0.8)
+        marker.Position = points[i]
+        marker.Parent = previewModel
+    end
+    
+    aiState.maneuverPreview = previewModel
+    
+    -- Auto-cleanup after 5 seconds
+    task.delay(5, function()
+        if previewModel and previewModel.Parent then
+            previewModel:Destroy()
+        end
+    end)
+end
+
+ParkourManeuvers.clearManeuverPreview = function()
+    if aiState.maneuverPreview and aiState.maneuverPreview.Parent then
+        aiState.maneuverPreview:Destroy()
+    end
+    aiState.maneuverPreview = nil
+end
+
+ParkourManeuvers.attemptManeuver = function(targetDirection: Vector3?): boolean
+    -- Check cooldowns
+    for maneuverName, cooldown in pairs(aiState.maneuverCooldowns) do
+        if tick() - cooldown < CONFIG.MANEUVER_COOLDOWNS[maneuverName] then
+            return false
+        end
+    end
+    
+    -- Try maneuvers in priority order
+    if ParkourManeuvers.wrapAround.canExecute(targetDirection) then
+        aiState.maneuverCooldowns.wrap_around = tick()
+        return ParkourManeuvers.wrapAround.execute(targetDirection)
+    elseif ParkourManeuvers.ladderFlick.canExecute(targetDirection) then
+        aiState.maneuverCooldowns.ladder_flick = tick()
+        return ParkourManeuvers.ladderFlick.execute(targetDirection)
+    elseif ParkourManeuvers.wallHop.canExecute() then
+        aiState.maneuverCooldowns.wallhop = tick()
+        return ParkourManeuvers.wallHop.execute()
+    end
+    
+    return false
+end
 
 -- State machine for AI behavior
 local StateMachine = {
@@ -291,13 +615,10 @@ local StateMachine = {
             enter = function()
                 aiState.currentCommand = "Idle"
                 updateStatus("Idle", "Waiting for command...")
+                ParkourManeuvers.clearManeuverPreview()
             end,
-            update = function(deltaTime)
-                -- Idle behavior
-            end,
-            exit = function()
-                -- Cleanup when leaving idle state
-            end
+            update = function(deltaTime) end,
+            exit = function() end
         },
         
         following = {
@@ -310,12 +631,10 @@ local StateMachine = {
                     return
                 end
                 
-                -- Use predicted position with delta time
                 local predictedPos = predictPlayerPosition(aiState.targetPlayer)
                 local direction = (humanoidRootPart.Position - predictedPos).Unit
                 aiState.goalPosition = predictedPos + direction * CONFIG.FOLLOW_DISTANCE
                 
-                -- Check if we need to recalculate path
                 if not aiState.currentPath or #aiState.currentPath == 0 or tick() - (aiState.lastPathCalculation or 0) > CONFIG.RECALCULATION_INTERVAL then
                     moveToGoal()
                     aiState.lastPathCalculation = tick()
@@ -331,12 +650,8 @@ local StateMachine = {
             enter = function()
                 aiState.currentCommand = "Parkour"
             end,
-            update = function(deltaTime)
-                -- Parkour behavior
-            end,
-            exit = function()
-                -- Cleanup when leaving parkour state
-            end
+            update = function(deltaTime) end,
+            exit = function() end
         },
         
         maneuvering = {
@@ -344,10 +659,9 @@ local StateMachine = {
                 aiState.currentCommand = "Maneuvering"
             end,
             update = function(deltaTime)
-                -- Update maneuver with delta time
                 if aiState.currentManeuver ~= "None" then
                     local timeSinceManeuver = tick() - aiState.maneuverData.startTime
-                    if timeSinceManeuver > 2 then -- Reset maneuver after 2 seconds
+                    if timeSinceManeuver > 2 then
                         aiState.currentManeuver = "None"
                         aiState.maneuverData = {}
                         StateMachine.transitionTo("idle")
@@ -357,6 +671,23 @@ local StateMachine = {
             exit = function()
                 aiState.currentManeuver = "None"
                 aiState.maneuverData = {}
+                ParkourManeuvers.clearManeuverPreview()
+            end
+        },
+        
+        advanced_parkour = {
+            enter = function()
+                aiState.currentCommand = "Advanced Parkour"
+                updateStatus("Advanced Parkour", "Executing parkour maneuvers")
+            end,
+            update = function(deltaTime)
+                -- In advanced parkour mode, actively look for maneuver opportunities
+                if ParkourManeuvers.attemptManeuver() then
+                    updateStatus("Advanced Parkour", "Executing: " .. aiState.currentManeuver)
+                end
+            end,
+            exit = function()
+                ParkourManeuvers.clearManeuverPreview()
             end
         }
     },
@@ -369,30 +700,26 @@ local StateMachine = {
             return
         end
         
-        -- Exit current state
         if StateMachine.states[StateMachine.currentState] and StateMachine.states[StateMachine.currentState].exit then
             StateMachine.states[StateMachine.currentState].exit()
         end
         
-        -- Update state history
         table.insert(aiState.stateHistory, {
             from = StateMachine.currentState,
             to = newState,
             timestamp = tick()
         })
         
-        -- Limit history size
         if #aiState.stateHistory > 10 then
             table.remove(aiState.stateHistory, 1)
         end
         
-        -- Enter new state
         StateMachine.currentState = newState
         if StateMachine.states[newState].enter then
             StateMachine.states[newState].enter()
         end
         
-        ErrorHandler.log("INFO", "State transition: %s -> %s", aiState.stateHistory[#aiState.stateHistory].from, newState)
+        ErrorHandler.log("INFO", "State transition: %s -> %s", StateMachine.currentState, newState)
     end,
     
     update = function(deltaTime)
@@ -402,25 +729,22 @@ local StateMachine = {
     end
 }
 
--- Enhanced UI System with stability improvements
+-- Fixed UI System with proper error handling
 local UISystem = {
     initialize = function()
-        -- Check if CoreGui is available
         if not CoreGui then
             ErrorHandler.log("ERROR", "CoreGui service is not available")
             return
         end
         
-        -- Create UI elements with proper error handling
         local success, errorMessage = pcall(function()
-            UISystem.createIntroGUIs()
+            UISystem.createIntroGUI()
         end)
         
         if not success then
             ErrorHandler.log("ERROR", "Failed to create intro GUI: %s", errorMessage)
-            -- Try to create main GUI directly if intro fails
-            pcall(function()
-                UISystem.createMainGUIs()
+            task.spawn(function()
+                UISystem.createMainGUI()
                 UIState.isInitialized = true
                 UIState.lastRefreshTime = tick()
                 aiState.isRunning = true
@@ -432,12 +756,9 @@ local UISystem = {
         UIState.isInitialized = true
         UIState.lastRefreshTime = tick()
         
-        -- Set up UI refresh mechanism
         task.spawn(function()
             while UIState.isInitialized do
                 task.wait(1)
-                
-                -- Check if UI needs refresh
                 if tick() - UIState.lastRefreshTime > UIState.refreshInterval or not UIState.isResponsive then
                     UISystem.refresh()
                 end
@@ -445,8 +766,7 @@ local UISystem = {
         end)
     end,
     
-    createIntroGUIs = function()
-        -- Check if we already have an intro GUI
+    createIntroGUI = function()
         if CoreGui:FindFirstChild("KYNEXIntro") then
             CoreGui:FindFirstChild("KYNEXIntro"):Destroy()
         end
@@ -457,10 +777,10 @@ local UISystem = {
         introGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
         UIState.elements.introGui = introGui
 
-        local loading1 = Instance.new("Frame")
-        loading1.Size = UDim2.new(1, 0, 1, 0)
-        loading1.BackgroundColor3 = CONFIG.SECONDARY_COLOR
-        loading1.Parent = introGui
+        local loadingFrame = Instance.new("Frame")
+        loadingFrame.Size = UDim2.new(1, 0, 1, 0)
+        loadingFrame.BackgroundColor3 = CONFIG.SECONDARY_COLOR
+        loadingFrame.Parent = introGui
         
         local loadingText = Instance.new("TextLabel")
         loadingText.Size = UDim2.new(0, 200, 0, 50)
@@ -470,20 +790,26 @@ local UISystem = {
         loadingText.TextColor3 = CONFIG.PRIMARY_COLOR
         loadingText.TextScaled = true
         loadingText.Font = CONFIG.FONT
-        loadingText.Parent = loading1
+        loadingText.Parent = loadingFrame
         
         TweenService:Create(loadingText, TweenInfo.new(1), {TextTransparency = 0}):Play()
-        task.wait(2)
-        loadingText.Text = "Initializing AI Core..."
-        task.wait(2)
-        loadingText.Text = "Calibrating Pathfinding..."
-        task.wait(2)
-        loadingText.Text = "Loading Memory System..."
-        task.wait(2)
-        loadingText.Text = "Analyzing Obstacle Patterns..."
-        task.wait(2)
         
-        loading1:Destroy()
+        -- Simulate loading sequence
+        local loadingSteps = {
+            "Initializing AI Core...",
+            "Calibrating Pathfinding...",
+            "Loading Memory System...",
+            "Analyzing Obstacle Patterns...",
+            "Loading Advanced Maneuvers..."
+        }
+        
+        for _, step in ipairs(loadingSteps) do
+            task.wait(1.5)
+            loadingText.Text = step
+        end
+        
+        task.wait(1)
+        loadingFrame:Destroy()
         
         local welcomeFrame = Instance.new("Frame")
         welcomeFrame.Size = UDim2.new(1, 0, 1, 0)
@@ -534,7 +860,7 @@ local UISystem = {
         injectDesc.Size = UDim2.new(1, -20, 0, 80)
         injectDesc.Position = UDim2.new(0, 10, 0, 80)
         injectDesc.BackgroundTransparency = 1
-        injectDesc.Text = "An adaptive AI who can complete parkour, learn from the environment, and predict player movements!"
+        injectDesc.Text = "An adaptive AI who can complete parkour, learn from the environment, and predict player movements! Now with advanced maneuvers: Ladder Flicks, Wall Hops, and Wrap Arounds!"
         injectDesc.TextColor3 = CONFIG.TEXT_COLOR
         injectDesc.TextWrapped = true
         injectDesc.Font = CONFIG.FONT
@@ -558,11 +884,10 @@ local UISystem = {
         
         injectButton.MouseButton1Click:Connect(function()
             introGui:Destroy()
-            UISystem.createMainGUIs()
+            UISystem.createMainGUI()
             aiState.isRunning = true
             StateMachine.transitionTo("idle")
             
-            -- Start memory cleanup task
             task.spawn(function()
                 while aiState.isRunning do
                     task.wait(CONFIG.MEMORY_CLEANUP_INTERVAL)
@@ -570,7 +895,6 @@ local UISystem = {
                 end
             end)
             
-            -- Start performance monitoring
             task.spawn(function()
                 while aiState.isRunning do
                     task.wait(CONFIG.PERFORMANCE_MONITOR_INTERVAL)
@@ -580,8 +904,7 @@ local UISystem = {
         end)
     end,
     
-    createMainGUIs = function()
-        -- Check if we already have a main GUI
+    createMainGUI = function()
         if CoreGui:FindFirstChild("KYNEXMain") then
             CoreGui:FindFirstChild("KYNEXMain"):Destroy()
         end
@@ -596,7 +919,6 @@ local UISystem = {
         local statusSidebar = Instance.new("Frame")
         statusSidebar.Name = "StatusSidebar"
         
-        -- Adjust size for mobile
         if isMobile then
             statusSidebar.Size = UDim2.new(0, 250 * CONFIG.MOBILE_SCALE, 1, 0)
             statusSidebar.Position = UDim2.new(1, -250 * CONFIG.MOBILE_SCALE, 0, 0)
@@ -673,7 +995,6 @@ local UISystem = {
         local commandFrame = Instance.new("Frame")
         commandFrame.Name = "CommandFrame"
         
-        -- Adjust size for mobile
         if isMobile then
             commandFrame.Size = UDim2.new(0, 400 * CONFIG.MOBILE_SCALE, 0, 60 * CONFIG.MOBILE_SCALE)
             commandFrame.Position = UDim2.new(0.5, -200 * CONFIG.MOBILE_SCALE, 1, -80 * CONFIG.MOBILE_SCALE)
@@ -696,7 +1017,7 @@ local UISystem = {
         commandTextBox.Position = UDim2.new(0, 10, 0, 5)
         commandTextBox.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
         commandTextBox.BorderSizePixel = 0
-        commandTextBox.PlaceholderText = "Enter command (e.g., /follow PlayerName, /smartparkour)"
+        commandTextBox.PlaceholderText = "Enter command (e.g., /follow PlayerName, /smartparkour, /advanced)"
         commandTextBox.Text = ""
         commandTextBox.TextColor3 = CONFIG.TEXT_COLOR
         commandTextBox.PlaceholderColor3 = Color3.fromRGB(150, 150, 150)
@@ -716,14 +1037,12 @@ local UISystem = {
             end
         end)
         
-        -- Add mobile controls if needed
         if isMobile then
             UISystem.createMobileControls(mainGui)
         end
     end,
     
     createMobileControls = function(parent: Instance)
-        -- Create mobile control buttons
         local controlFrame = Instance.new("Frame")
         controlFrame.Name = "MobileControls"
         controlFrame.Size = UDim2.new(0, 200 * CONFIG.MOBILE_SCALE, 0, 200 * CONFIG.MOBILE_SCALE)
@@ -732,58 +1051,66 @@ local UISystem = {
         controlFrame.Parent = parent
         UIState.elements.mobileControls = controlFrame
         
-        -- Create directional buttons
         local buttonSize = UDim2.new(0, 60 * CONFIG.MOBILE_SCALE, 0, 60 * CONFIG.MOBILE_SCALE)
         local centerOffset = 70 * CONFIG.MOBILE_SCALE
         
-        -- Up button
         local upButton = UISystem.createStyledTextButton("↑", buttonSize, 1)
         upButton.Position = UDim2.new(0, centerOffset, 0, 0)
         upButton.Parent = controlFrame
         
-        -- Use both MouseButton1Click and TouchTap for mobile compatibility
-        local upButtonConnection
-        upButtonConnection = function()
+        upButton.MouseButton1Click:Connect(function()
             processCommand("/smartparkour")
-        end
-        upButton.MouseButton1Click:Connect(upButtonConnection)
-        upButton.TouchTap:Connect(upButtonConnection)
+        end)
         
-        -- Down button
         local downButton = UISystem.createStyledTextButton("↓", buttonSize, 2)
         downButton.Position = UDim2.new(0, centerOffset, 0, centerOffset * 2)
         downButton.Parent = controlFrame
         
-        local downButtonConnection
-        downButtonConnection = function()
+        downButton.MouseButton1Click:Connect(function()
             processCommand("/unfollow")
-        end
-        downButton.MouseButton1Click:Connect(downButtonConnection)
-        downButton.TouchTap:Connect(downButtonConnection)
+        end)
         
-        -- Left button
         local leftButton = UISystem.createStyledTextButton("←", buttonSize, 3)
         leftButton.Position = UDim2.new(0, 0, 0, centerOffset)
         leftButton.Parent = controlFrame
         
-        local leftButtonConnection
-        leftButtonConnection = function()
+        leftButton.MouseButton1Click:Connect(function()
             processCommand("/parkourrun")
-        end
-        leftButton.MouseButton1Click:Connect(leftButtonConnection)
-        leftButton.TouchTap:Connect(leftButtonConnection)
+        end)
         
-        -- Right button
         local rightButton = UISystem.createStyledTextButton("→", buttonSize, 4)
         rightButton.Position = UDim2.new(0, centerOffset * 2, 0, centerOffset)
         rightButton.Parent = controlFrame
         
-        local rightButtonConnection
-        rightButtonConnection = function()
+        rightButton.MouseButton1Click:Connect(function()
             processCommand("/rungoal")
-        end
-        rightButton.MouseButton1Click:Connect(rightButtonConnection)
-        rightButton.TouchTap:Connect(rightButtonConnection)
+        end)
+        
+        -- Advanced maneuver buttons
+        local advancedFrame = Instance.new("Frame")
+        advancedFrame.Name = "AdvancedControls"
+        advancedFrame.Size = UDim2.new(0, 150 * CONFIG.MOBILE_SCALE, 0, 50 * CONFIG.MOBILE_SCALE)
+        advancedFrame.Position = UDim2.new(0, 20, 1, -280 * CONFIG.MOBILE_SCALE)
+        advancedFrame.BackgroundTransparency = 1
+        advancedFrame.Parent = parent
+        
+        local ladderButton = UISystem.createStyledTextButton("Ladder", UDim2.new(0, 70 * CONFIG.MOBILE_SCALE, 1, 0), 1)
+        ladderButton.Position = UDim2.new(0, 0, 0, 0)
+        ladderButton.BackgroundColor3 = ParkourManeuvers.ladderFlick.color
+        ladderButton.Parent = advancedFrame
+        
+        ladderButton.MouseButton1Click:Connect(function()
+            ParkourManeuvers.ladderFlick.execute()
+        end)
+        
+        local wallhopButton = UISystem.createStyledTextButton("WallHop", UDim2.new(0, 70 * CONFIG.MOBILE_SCALE, 1, 0), 2)
+        wallhopButton.Position = UDim2.new(0, 80 * CONFIG.MOBILE_SCALE, 0, 0)
+        wallhopButton.BackgroundColor3 = ParkourManeuvers.wallHop.color
+        wallhopButton.Parent = advancedFrame
+        
+        wallhopButton.MouseButton1Click:Connect(function()
+            ParkourManeuvers.wallHop.execute()
+        end)
     end,
     
     createStyledTextLabel = function(text: string, size: UDim2, layoutOrder: number): TextLabel
@@ -821,14 +1148,11 @@ local UISystem = {
         
         ErrorHandler.log("INFO", "Refreshing UI")
         
-        -- Mark UI as responsive
         UIState.isResponsive = true
         UIState.lastRefreshTime = tick()
         
-        -- Update status display
         updateStatus(aiState.currentCommand, "System refreshed")
         
-        -- Verify all UI elements exist
         for name, element in pairs(UIState.elements) do
             if not element or not element.Parent then
                 ErrorHandler.log("WARN", "UI element missing: %s", name)
@@ -842,67 +1166,53 @@ local UISystem = {
 -- Performance monitoring system
 local PerformanceMonitor = {
     checkPerformance = function()
-        -- Calculate average frame time
         local currentTime = tick()
         local deltaTime = currentTime - performanceMonitor.lastFrameTime
         performanceMonitor.averageFrameTime = performanceMonitor.averageFrameTime * 0.9 + deltaTime * 0.1
         performanceMonitor.lastFrameTime = currentTime
         
-        -- Check memory usage
         if currentTime - performanceMonitor.lastMemoryCheck > 10 then
             performanceMonitor.memoryUsage = collectgarbage("count")
             performanceMonitor.lastMemoryCheck = currentTime
             
-            -- Log memory usage if high
-            if performanceMonitor.memoryUsage > 50000 then -- 50MB
+            if performanceMonitor.memoryUsage > 50000 then
                 ErrorHandler.log("WARN", "High memory usage: %.2f KB", performanceMonitor.memoryUsage)
-                
-                -- Trigger memory cleanup
                 MemorySystem.cleanOldMemory()
                 collectgarbage("collect")
             end
         end
         
-        -- Check frame rate
-        if performanceMonitor.averageFrameTime > 0.05 then -- < 20 FPS
+        if performanceMonitor.averageFrameTime > 0.05 then
             ErrorHandler.log("WARN", "Low frame rate detected: %.2f ms", performanceMonitor.averageFrameTime * 1000)
-            
-            -- Reduce pathfinding complexity
             CONFIG.RECALCULATION_INTERVAL = math.min(CONFIG.RECALCULATION_INTERVAL * 1.5, 2.0)
         else
-            -- Reset to normal if performance improves
             CONFIG.RECALCULATION_INTERVAL = 0.5
         end
     end
 }
 
--- Obstacle Analysis Functions with delta time
+-- Obstacle Analysis Functions
 local function analyzeObstacle(direction: Vector3): string
     local origin = humanoidRootPart.Position
     local lookDirection = direction.Unit
     
-    -- Raycast parameters
     local raycastParams = RaycastParams.new()
     raycastParams.FilterDescendantsInstances = {character}
     raycastParams.FilterType = Enum.RaycastFilterType.Exclude
     
-    -- Check for gap (empty space below)
     local downResult = Workspace:Raycast(origin + lookDirection * 5, Vector3.new(0, -10, 0), raycastParams)
     if not downResult then
         return "gap"
     end
     
-    -- Check for wall (obstacle in front)
     local forwardResult = Workspace:Raycast(origin, lookDirection * CONFIG.OBSTACLE_SCAN_DISTANCE, raycastParams)
     if forwardResult then
-        -- Check if it's a tall wall
         local upResult = Workspace:Raycast(forwardResult.Position, Vector3.new(0, 10, 0), raycastParams)
         if upResult then
             return "wall"
         end
     end
     
-    -- Check for moving platform
     if forwardResult and forwardResult.Instance then
         local part = forwardResult.Instance
         if part.Velocity.Magnitude > 0.1 or part.AssemblyAngularVelocity.Magnitude > 0.1 then
@@ -914,9 +1224,8 @@ local function analyzeObstacle(direction: Vector3): string
 end
 
 local function executeManeuver(maneuverType: string, direction: Vector3)
-    -- Check cooldown
     if aiState.maneuverCooldowns[maneuverType] and tick() - aiState.maneuverCooldowns[maneuverType] < 2 then
-        return -- On cooldown
+        return
     end
     
     aiState.currentManeuver = maneuverType
@@ -926,30 +1235,20 @@ local function executeManeuver(maneuverType: string, direction: Vector3)
     StateMachine.transitionTo("maneuvering")
     
     if maneuverType == "gap" then
-        -- Long jump maneuver
         updateStatus("Maneuver", "Executing long jump")
         humanoid.Jump = true
         humanoid:Move(direction * 1.5)
     elseif maneuverType == "wall" then
-        -- Wall jump or find alternative
         updateStatus("Maneuver", "Attempting wall jump")
         humanoid.Jump = true
-        -- Try to move sideways to find a path
         local sideDirection = Vector3.new(direction.Z, 0, -direction.X).Unit
         humanoid:Move(sideDirection)
     elseif maneuverType == "moving_platform" then
-        -- Wait for or time jump to moving platform
         updateStatus("Maneuver", "Timing jump to moving platform")
-        -- This would need more complex logic based on platform velocity
-    end
-    
-    -- Haptic feedback for mobile
-    if isMobile then
-        UserInputService:HapticFeedback(Enum.HapticType.Medium, CONFIG.HAPTIC_FEEDBACK_INTENSITY)
     end
 end
 
--- Predictive Following Functions with delta time
+-- Predictive Following Functions
 local function predictPlayerPosition(targetPlayer: Player): Vector3
     if not targetPlayer or not targetPlayer.Character or not targetPlayer.Character:FindFirstChild("HumanoidRootPart") then
         return Vector3.new(0, 0, 0)
@@ -960,39 +1259,33 @@ local function predictPlayerPosition(targetPlayer: Player): Vector3
         return targetPlayer.Character.HumanoidRootPart.Position
     end
     
-    -- Get current movement data
     local currentPosition = targetPlayer.Character.HumanoidRootPart.Position
     local moveDirection = targetHumanoid.MoveDirection
     local walkSpeed = targetHumanoid.WalkSpeed
     
-    -- Predict future position with delta time
     local deltaTime = DeltaTimeManager.getDelta()
     local predictedPosition = currentPosition + moveDirection * walkSpeed * CONFIG.PREDICTION_TIME
     
     return predictedPosition
 end
 
--- Enhanced Parkour Functions with delta time
+-- Enhanced Parkour Functions
 local function analyzeParkourChain(): {Vector3}
     local checkpoints = {}
     local origin = humanoidRootPart.Position
     
-    -- Start with current position
     table.insert(checkpoints, origin)
     
-    -- Raycast parameters
     local raycastParams = RaycastParams.new()
     raycastParams.FilterDescendantsInstances = {character}
     raycastParams.FilterType = Enum.RaycastFilterType.Exclude
     
-    -- Scan for parkour elements in increasing height
     local lastCheckpoint = origin
     local foundNewCheckpoint = true
     
-    while foundNewCheckpoint and #checkpoints < 10 do -- Limit to prevent infinite loops
+    while foundNewCheckpoint and #checkpoints < 10 do
         foundNewCheckpoint = false
         
-        -- Scan in a sphere around the last checkpoint
         for angle = 0, 360, 45 do
             local rad = math.rad(angle)
             local direction = Vector3.new(math.cos(rad), 0.5, math.sin(rad)).Unit
@@ -1003,8 +1296,7 @@ local function analyzeParkourChain(): {Vector3}
                 raycastParams
             )
             
-            if result and result.Position.Y > lastCheckpoint.Y + 2 then -- Only consider higher points
-                -- Check if this is a new checkpoint (not too close to existing ones)
+            if result and result.Position.Y > lastCheckpoint.Y + 2 then
                 local isNew = true
                 for _, checkpoint in ipairs(checkpoints) do
                     if (result.Position - checkpoint).Magnitude < 5 then
@@ -1065,7 +1357,6 @@ local function calculatePath(goal: Vector3): {any}?
     local paths = {}
     local baseGoal = goal
     
-    -- Check cache first
     local cacheKey = MemorySystem.hashWaypoint(goal)
     if aiState.pathCache[cacheKey] then
         local cachedPath = aiState.pathCache[cacheKey].path
@@ -1075,13 +1366,12 @@ local function calculatePath(goal: Vector3): {any}?
         end
     end
     
-    -- Create path with memory consideration
     local path = PathfindingService:CreatePath({
         AgentHeight = 5,
         AgentRadius = 2,
         AgentCanJump = true,
         WaypointSpacing = 4,
-        Costs = {} -- We could add custom costs based on memory here
+        Costs = {}
     })
     
     local success, errorMessage = pcall(function()
@@ -1089,7 +1379,6 @@ local function calculatePath(goal: Vector3): {any}?
     end)
     
     if success and path.Status == Enum.PathStatus.Success then
-        -- Check waypoints against memory
         local waypoints = path:GetWaypoints()
         local hasDangerousWaypoint = false
         
@@ -1104,7 +1393,6 @@ local function calculatePath(goal: Vector3): {any}?
         if not hasDangerousWaypoint then
             table.insert(paths, path)
             
-            -- Cache the path
             aiState.pathCache[cacheKey] = {
                 path = path,
                 timestamp = tick()
@@ -1112,7 +1400,6 @@ local function calculatePath(goal: Vector3): {any}?
         end
     end
 
-    -- Try alternative paths with offsets
     local offsets = {
         Vector3.new(10, 0, 0),
         Vector3.new(-10, 0, 0),
@@ -1131,7 +1418,6 @@ local function calculatePath(goal: Vector3): {any}?
             dummyPath:ComputeAsync(humanoidRootPart.Position, baseGoal + offset)
         end)
         if success and dummyPath.Status == Enum.PathStatus.Success then
-            -- Check waypoints against memory
             local waypoints = dummyPath:GetWaypoints()
             local hasDangerousWaypoint = false
             
@@ -1150,7 +1436,6 @@ local function calculatePath(goal: Vector3): {any}?
     end
     
     if #paths > 0 then
-        -- Sort paths by efficiency (prefer paths with more efficient waypoints)
         table.sort(paths, function(a, b)
             local aEfficiency = 0
             local bEfficiency = 0
@@ -1200,22 +1485,26 @@ local function moveToGoal()
     for i, waypoint in ipairs(waypoints) do
         if not aiState.isRunning then break end
         
-        -- Check if goal has changed (for following)
         if aiState.goalPosition ~= (aiState.targetPlayer and predictPlayerPosition(aiState.targetPlayer) or aiState.goalPosition) then
             moveToGoal()
             return
         end
         
-        -- Real-time obstacle detection
         local direction = (waypoint.Position - humanoidRootPart.Position).Unit
         local obstacleType = analyzeObstacle(direction)
         
+        -- Check for advanced maneuvers first
+        if ParkourManeuvers.attemptManeuver(direction) then
+            task.wait(1)
+            moveToGoal()
+            return
+        end
+        
         if obstacleType ~= "none" and aiState.currentManeuver == "None" then
             executeManeuver(obstacleType, direction)
-            task.wait(1) -- Give time for maneuver to execute
+            task.wait(1)
             aiState.currentManeuver = "None"
             
-            -- Recalculate path after maneuver
             moveToGoal()
             return
         end
@@ -1227,7 +1516,6 @@ local function moveToGoal()
             humanoid.Jump = true
         end
         
-        -- Update memory with waypoint success
         MemorySystem.updatePathMemory(waypoint.Position, true)
         
         aiState.lastWaypointIndex = i
@@ -1294,7 +1582,6 @@ local function processCommand(input: string)
         if #checkpoints > 1 then
             updateStatus("Smart Parkour", "Found " .. #checkpoints .. " checkpoints")
             
-            -- Move through checkpoints sequentially
             for i = 2, #checkpoints do
                 if not aiState.isRunning or aiState.currentCommand ~= "Smart Parkour" then break end
                 
@@ -1302,9 +1589,8 @@ local function processCommand(input: string)
                 updateStatus("Smart Parkour", "Moving to checkpoint " .. (i-1) .. "/" .. (#checkpoints-1))
                 moveToGoal()
                 
-                -- Wait until we reach the checkpoint
                 local reachedCheckpoint = false
-                local timeout = tick() + 10 -- 10 second timeout
+                local timeout = tick() + 10
                 
                 while not reachedCheckpoint and tick() < timeout do
                     if (humanoidRootPart.Position - checkpoints[i]).Magnitude < 5 then
@@ -1365,8 +1651,33 @@ local function processCommand(input: string)
         else
             updateStatus("Error", "No goal set. Use /setgoal first.")
         end
+        
+    elseif command == "/advanced" then
+        StateMachine.transitionTo("advanced_parkour")
+        updateStatus("Advanced Parkour", "Activated - will use advanced maneuvers")
+        
+    elseif command == "/ladderflick" then
+        if ParkourManeuvers.ladderFlick.execute() then
+            updateStatus("Maneuver", "Executing Ladder Flick")
+        else
+            updateStatus("Maneuver", "Cannot execute Ladder Flick - conditions not met")
+        end
+        
+    elseif command == "/wallhop" then
+        if ParkourManeuvers.wallHop.execute() then
+            updateStatus("Maneuver", "Executing Wall Hop")
+        else
+            updateStatus("Maneuver", "Cannot execute Wall Hop - conditions not met")
+        end
+        
+    elseif command == "/wraparound" then
+        if ParkourManeuvers.wrapAround.execute() then
+            updateStatus("Maneuver", "Executing Wrap Around")
+        else
+            updateStatus("Maneuver", "Cannot execute Wrap Around - conditions not met")
+        end
+        
     elseif command == "/clearmemory" then
-        -- Clear all memory
         aiState.pathMemory.successfulPaths = {}
         aiState.pathMemory.failedWaypoints = {}
         aiState.pathMemory.efficientWaypoints = {}
@@ -1389,16 +1700,14 @@ local function updateStatus(status: string, details: string)
     end
 end
 
--- Main game loop with delta time
+-- Main game loop
 RunService.Heartbeat:Connect(function()
     if not aiState.isRunning then return end
     
     local deltaTime = DeltaTimeManager.getDelta()
     
-    -- Update state machine
     StateMachine.update(deltaTime)
     
-    -- Check if stuck
     local currentPosition = humanoidRootPart.Position
     local distanceMoved = (currentPosition - aiState.lastPosition).Magnitude
     
@@ -1408,7 +1717,6 @@ RunService.Heartbeat:Connect(function()
             updateStatus("Stuck", "Recalculating path...")
             aiState.stuckTimer = 0
             
-            -- Update memory with failure
             if aiState.lastWaypointIndex > 0 and aiState.currentPath[aiState.lastWaypointIndex] then
                 MemorySystem.updatePathMemory(aiState.currentPath[aiState.lastWaypointIndex].Position, false)
             end
@@ -1423,9 +1731,8 @@ RunService.Heartbeat:Connect(function()
     
     aiState.lastPosition = currentPosition
     
-    -- Update performance monitor
     performanceMonitor.frameCount += 1
-    if performanceMonitor.frameCount % 60 == 0 then -- Every 60 frames
+    if performanceMonitor.frameCount % 60 == 0 then
         PerformanceMonitor.checkPerformance()
     end
 end)
