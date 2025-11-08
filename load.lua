@@ -1475,5 +1475,3 @@ UISystem.initialize()
 MobileGestures.initialize()
 
 ErrorHandler.log("INFO", "KYNEX AI System initialized")
-
-sebutkan semua fitur KYNEX AI
