@@ -18,6 +18,9 @@ local character = player.Character or player.CharacterAdded:Wait()
 local humanoid = character:WaitForChild("Humanoid")
 local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
 
+-- 全局变量定义
+local goalHologram = nil
+
 -- Enhanced configuration with mobile support
 local CONFIG = {
     FOLLOW_DISTANCE = 5,
@@ -96,6 +99,7 @@ local aiState = {
     stuckTimer = 0,
     lastPosition = humanoidRootPart.Position,
     pathCache = {},
+    lastPathCalculation = 0, -- Added missing state variable
     
     -- Memory system with optimized data structures
     pathMemory = {
@@ -736,33 +740,50 @@ local UISystem = {
         local upButton = UISystem.createStyledTextButton("↑", buttonSize, 1)
         upButton.Position = UDim2.new(0, centerOffset, 0, 0)
         upButton.Parent = controlFrame
-        upButton.MouseButton1Click:Connect(function()
+        
+        -- Use both MouseButton1Click and TouchTap for mobile compatibility
+        local upButtonConnection
+        upButtonConnection = function()
             processCommand("/smartparkour")
-        end)
+        end
+        upButton.MouseButton1Click:Connect(upButtonConnection)
+        upButton.TouchTap:Connect(upButtonConnection)
         
         -- Down button
         local downButton = UISystem.createStyledTextButton("↓", buttonSize, 2)
         downButton.Position = UDim2.new(0, centerOffset, 0, centerOffset * 2)
         downButton.Parent = controlFrame
-        downButton.MouseButton1Click:Connect(function()
+        
+        local downButtonConnection
+        downButtonConnection = function()
             processCommand("/unfollow")
-        end)
+        end
+        downButton.MouseButton1Click:Connect(downButtonConnection)
+        downButton.TouchTap:Connect(downButtonConnection)
         
         -- Left button
         local leftButton = UISystem.createStyledTextButton("←", buttonSize, 3)
         leftButton.Position = UDim2.new(0, 0, 0, centerOffset)
         leftButton.Parent = controlFrame
-        leftButton.MouseButton1Click:Connect(function()
+        
+        local leftButtonConnection
+        leftButtonConnection = function()
             processCommand("/parkourrun")
-        end)
+        end
+        leftButton.MouseButton1Click:Connect(leftButtonConnection)
+        leftButton.TouchTap:Connect(leftButtonConnection)
         
         -- Right button
         local rightButton = UISystem.createStyledTextButton("→", buttonSize, 4)
         rightButton.Position = UDim2.new(0, centerOffset * 2, 0, centerOffset)
         rightButton.Parent = controlFrame
-        rightButton.MouseButton1Click:Connect(function()
+        
+        local rightButtonConnection
+        rightButtonConnection = function()
             processCommand("/rungoal")
-        end)
+        end
+        rightButton.MouseButton1Click:Connect(rightButtonConnection)
+        rightButton.TouchTap:Connect(rightButtonConnection)
     end,
     
     createStyledTextLabel = function(text: string, size: UDim2, layoutOrder: number): TextLabel
@@ -1217,7 +1238,7 @@ local function processCommand(input: string)
     local args = string.split(string.lower(input), " ")
     local command = args[1]
     
-    updateStatus("Processing", `Executing: {input}`)
+    updateStatus("Processing", "Executing: " .. input)
     
     if command == "/follow" and args[2] then
         local targetName = args[2]
@@ -1225,15 +1246,15 @@ local function processCommand(input: string)
         if targetPlayer and targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart") then
             aiState.targetPlayer = targetPlayer
             StateMachine.transitionTo("following")
-            updateStatus("Following", `Target: {targetPlayer.Name}`)
+            updateStatus("Following", "Target: " .. targetPlayer.Name)
         else
-            updateStatus("Error", `Player '{targetName}' not found.`)
+            updateStatus("Error", "Player '" .. targetName .. "' not found.")
             StateMachine.transitionTo("idle")
         end
         
     elseif command == "/unfollow" then
         if aiState.targetPlayer then
-            updateStatus("Unfollow", `Stopped following {aiState.targetPlayer.Name}`)
+            updateStatus("Unfollow", "Stopped following " .. aiState.targetPlayer.Name)
             StateMachine.transitionTo("idle")
         else
             StarterGui:SetCore("ChatMakeSystemMessage", {
@@ -1271,14 +1292,14 @@ local function processCommand(input: string)
         
         local checkpoints = analyzeParkourChain()
         if #checkpoints > 1 then
-            updateStatus("Smart Parkour", `Found {#checkpoints} checkpoints`)
+            updateStatus("Smart Parkour", "Found " .. #checkpoints .. " checkpoints")
             
             -- Move through checkpoints sequentially
             for i = 2, #checkpoints do
                 if not aiState.isRunning or aiState.currentCommand ~= "Smart Parkour" then break end
                 
                 aiState.goalPosition = checkpoints[i]
-                updateStatus("Smart Parkour", `Moving to checkpoint {i-1}/{#checkpoints-1}`)
+                updateStatus("Smart Parkour", "Moving to checkpoint " .. (i-1) .. "/" .. (#checkpoints-1))
                 moveToGoal()
                 
                 -- Wait until we reach the checkpoint
@@ -1314,7 +1335,7 @@ local function processCommand(input: string)
         
         aiState.goalPosition = humanoidRootPart.Position
         StateMachine.transitionTo("idle")
-        updateStatus("Goal Set", `Position: {math.floor(aiState.goalPosition.X)}, {math.floor(aiState.goalPosition.Y)}, {math.floor(aiState.goalPosition.Z)}`)
+        updateStatus("Goal Set", "Position: " .. math.floor(aiState.goalPosition.X) .. ", " .. math.floor(aiState.goalPosition.Y) .. ", " .. math.floor(aiState.goalPosition.Z))
         
         goalHologram = Instance.new("Part")
         goalHologram.Size = Vector3.new(8, 0.5, 8)
@@ -1349,6 +1370,7 @@ local function processCommand(input: string)
         aiState.pathMemory.successfulPaths = {}
         aiState.pathMemory.failedWaypoints = {}
         aiState.pathMemory.efficientWaypoints = {}
+        aiState.pathCache = {}
         updateStatus("Memory Cleared", "All path memory has been reset")
     else
         updateStatus("Error", "Unknown command.")
