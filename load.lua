@@ -117,28 +117,15 @@ local aiState = {
     stateHistory = {}, -- History of state transitions
 }
 
--- Error handling and logging system
+-- Error handling and logging system (Roblox compatible)
 local ErrorHandler = {
-    logs = {},
     maxLogEntries = 100,
     
     log = function(level: string, message: string, ...: any)
         local formattedMessage = string.format(message, ...)
         local timestamp = os.date("%H:%M:%S", tick())
-        local logEntry = {
-            timestamp = timestamp,
-            level = level,
-            message = formattedMessage,
-        }
         
-        table.insert(ErrorHandler.logs, logEntry)
-        
-        -- Trim logs if too many
-        if #ErrorHandler.logs > ErrorHandler.maxLogEntries then
-            table.remove(ErrorHandler.logs, 1)
-        end
-        
-        -- Print to console
+        -- Print to console with timestamp and level
         print(string.format("[%s][%s] %s", timestamp, level, formattedMessage))
         
         -- If error level, try to recover
