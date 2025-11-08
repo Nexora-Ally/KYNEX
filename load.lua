@@ -11,6 +11,7 @@ local PhysicsService = game:GetService("PhysicsService")
 local HttpService = game:GetService("HttpService")
 local GuiService = game:GetService("GuiService")
 local ContextActionService = game:GetService("ContextActionService")
+local CoreGui = game:GetService("CoreGui")
 
 local player = Players.LocalPlayer
 local character = player.Character or player.CharacterAdded:Wait()
@@ -400,6 +401,12 @@ local StateMachine = {
 -- Enhanced UI System with stability improvements
 local UISystem = {
     initialize = function()
+        -- Check if CoreGui is available
+        if not CoreGui then
+            ErrorHandler.log("ERROR", "CoreGui service is not available")
+            return
+        end
+        
         -- Create UI elements with proper error handling
         local success, errorMessage = pcall(function()
             UISystem.createIntroGUIs()
@@ -407,6 +414,14 @@ local UISystem = {
         
         if not success then
             ErrorHandler.log("ERROR", "Failed to create intro GUI: %s", errorMessage)
+            -- Try to create main GUI directly if intro fails
+            pcall(function()
+                UISystem.createMainGUIs()
+                UIState.isInitialized = true
+                UIState.lastRefreshTime = tick()
+                aiState.isRunning = true
+                StateMachine.transitionTo("idle")
+            end)
             return
         end
         
@@ -427,9 +442,14 @@ local UISystem = {
     end,
     
     createIntroGUIs = function()
+        -- Check if we already have an intro GUI
+        if CoreGui:FindFirstChild("KYNEXIntro") then
+            CoreGui:FindFirstChild("KYNEXIntro"):Destroy()
+        end
+        
         local introGui = Instance.new("ScreenGui")
         introGui.Name = "KYNEXIntro"
-        introGui.Parent = game:GetService("CoreGui")
+        introGui.Parent = CoreGui
         introGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
         UIState.elements.introGui = introGui
 
@@ -557,9 +577,14 @@ local UISystem = {
     end,
     
     createMainGUIs = function()
+        -- Check if we already have a main GUI
+        if CoreGui:FindFirstChild("KYNEXMain") then
+            CoreGui:FindFirstChild("KYNEXMain"):Destroy()
+        end
+        
         local mainGui = Instance.new("ScreenGui")
         mainGui.Name = "KYNEXMain"
-        mainGui.Parent = game:GetService("CoreGui")
+        mainGui.Parent = CoreGui
         mainGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
         mainGui.ResetOnSpawn = false
         UIState.elements.mainGui = mainGui
