@@ -178,80 +178,6 @@ local DeltaTimeManager = {
     end,
 }
 
--- Mobile gesture handling
-local MobileGestures = {
-    touchPositions = {},
-    gestureStartPos = nil,
-    gestureStartTime = 0,
-    
-    initialize = function()
-        if not isMobile then return end
-        
-        UserInputService.TouchBegan:Connect(function(touchPositions, gameProcessedEvent)
-            if gameProcessedEvent then return end
-            
-            MobileGestures.touchPositions = touchPositions
-            MobileGestures.gestureStartPos = touchPositions[1]
-            MobileGestures.gestureStartTime = tick()
-        end)
-        
-        UserInputService.TouchMoved:Connect(function(touchPositions, gameProcessedEvent)
-            if gameProcessedEvent then return end
-            
-            MobileGestures.touchPositions = touchPositions
-        end)
-        
-        UserInputService.TouchEnded:Connect(function(touchPositions, gameProcessedEvent)
-            if gameProcessedEvent then return end
-            
-            local gestureEndPos = touchPositions[1]
-            local gestureDuration = tick() - MobileGestures.gestureStartTime
-            
-            -- Detect swipe gestures
-            if gestureDuration < 0.5 then
-                local swipeVector = gestureEndPos - MobileGestures.gestureStartPos
-                local swipeLength = swipeVector.Magnitude
-                
-                if swipeLength > 50 then
-                    -- Determine swipe direction
-                    local angle = math.atan2(swipeVector.Y, swipeVector.X)
-                    local direction
-                    
-                    if angle > -math.pi/4 and angle <= math.pi/4 then
-                        direction = "right"
-                    elseif angle > math.pi/4 and angle <= 3*math.pi/4 then
-                        direction = "down"
-                    elseif angle > 3*math.pi/4 or angle <= -3*math.pi/4 then
-                        direction = "left"
-                    else
-                        direction = "up"
-                    end
-                    
-                    MobileGestures.handleSwipe(direction)
-                end
-            end
-        end)
-    end,
-    
-    handleSwipe = function(direction: string)
-        -- Haptic feedback
-        if isMobile then
-            UserInputService:HapticFeedback(Enum.HapticType.Light, CONFIG.HAPTIC_FEEDBACK_INTENSITY)
-        end
-        
-        -- Handle swipe commands
-        if direction == "up" then
-            processCommand("/smartparkour")
-        elseif direction == "down" then
-            processCommand("/unfollow")
-        elseif direction == "left" then
-            processCommand("/parkourrun")
-        elseif direction == "right" then
-            processCommand("/rungoal")
-        end
-    end,
-}
-
 -- Enhanced Memory System with optimized data structures
 local MemorySystem = {
     -- Hash function for waypoint keys
@@ -1472,6 +1398,5 @@ end)
 
 -- Initialize systems
 UISystem.initialize()
-MobileGestures.initialize()
 
 ErrorHandler.log("INFO", "KYNEX AI System initialized")
