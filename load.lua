@@ -1398,5 +1398,3 @@ end)
 
 -- Initialize systems
 UISystem.initialize()
-
-ErrorHandler.log("INFO", "KYNEX AI System initialized")
